@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 
 @MainActor
@@ -35,6 +36,13 @@ final class DeskBridgeModel: ObservableObject {
     var binaryPath: String {
         if let override = ProcessInfo.processInfo.environment["DESKBRIDGE_BIN"], !override.isEmpty {
             return override
+        }
+
+        let helperExecutable = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Helpers/DeskBridgeHelper.app/Contents/MacOS/deskbridge")
+            .path
+        if FileManager.default.isExecutableFile(atPath: helperExecutable) {
+            return helperExecutable
         }
 
         let bundledExecutable = Bundle.main.bundleURL
@@ -173,6 +181,25 @@ final class DeskBridgeModel: ObservableObject {
     }
 
     private func ensureAccessibilityPermission() -> Bool {
+        guard mainAppAccessibilityTrusted(prompt: true) else {
+            lastDiagnostics = """
+            Accessibility permission is required before DeskBridge can inject keyboard and mouse input.
+
+            macOS checks the visible app that launches the helper. Enable DeskBridge in System Settings first; the helper check can only pass after the app is trusted.
+
+            DeskBridge app
+            process: \(Bundle.main.bundlePath)
+            accessibility: missing
+
+            Helper process
+            process: \(binaryPath)
+
+            After granting permission in System Settings, click Connect again.
+            """
+            openAccessibilitySettings()
+            return false
+        }
+
         let output = runDeskBridgeProcess(
             binary: binaryPath,
             arguments: ["permissions", "--prompt"]
@@ -185,7 +212,7 @@ final class DeskBridgeModel: ObservableObject {
         lastDiagnostics = """
         Accessibility permission is required before DeskBridge can inject keyboard and mouse input.
 
-        macOS grants this to the actual helper process, not just the visible app window.
+        DeskBridge.app is trusted, but the helper process still failed its permission check. Remove stale DeskBridge entries in System Settings, add DeskBridge again, and enable it.
 
         \(output)
 
@@ -193,6 +220,13 @@ final class DeskBridgeModel: ObservableObject {
         """
         openAccessibilitySettings()
         return false
+    }
+
+    private func mainAppAccessibilityTrusted(prompt: Bool) -> Bool {
+        let options: CFDictionary = [
+            "AXTrustedCheckOptionPrompt": prompt
+        ] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
     }
 
     private func consumeLog(_ text: String) {
