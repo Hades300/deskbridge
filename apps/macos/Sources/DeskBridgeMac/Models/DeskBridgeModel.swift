@@ -46,6 +46,10 @@ final class DeskBridgeModel: ObservableObject {
     @Published var captureInput: Bool
     @Published var debugLogging: Bool
     @Published var reverseScroll: Bool
+    @Published var clipboardEnabled: Bool
+    @Published var clipboardText: Bool
+    @Published var clipboardImage: Bool
+    @Published var clipboardFiles: Bool
     @Published var peerOffsetX: Double
     @Published var peerOffsetY: Double
     @Published var status: String = "Idle"
@@ -77,6 +81,10 @@ final class DeskBridgeModel: ObservableObject {
         captureInput = defaults.object(forKey: "captureInput") as? Bool ?? true
         debugLogging = defaults.object(forKey: "debugLogging") as? Bool ?? true
         reverseScroll = defaults.object(forKey: "reverseScroll") as? Bool ?? false
+        clipboardEnabled = defaults.object(forKey: "clipboardEnabled") as? Bool ?? true
+        clipboardText = defaults.object(forKey: "clipboardText") as? Bool ?? true
+        clipboardImage = defaults.object(forKey: "clipboardImage") as? Bool ?? true
+        clipboardFiles = defaults.object(forKey: "clipboardFiles") as? Bool ?? true
         peerOffsetX = defaults.object(forKey: "peerOffsetX") as? Double ?? -1920
         peerOffsetY = defaults.object(forKey: "peerOffsetY") as? Double ?? 0
         shouldStayConnected = defaults.object(forKey: shouldStayConnectedKey) as? Bool ?? false
@@ -187,6 +195,10 @@ final class DeskBridgeModel: ObservableObject {
         defaults.set(captureInput, forKey: "captureInput")
         defaults.set(debugLogging, forKey: "debugLogging")
         defaults.set(reverseScroll, forKey: "reverseScroll")
+        defaults.set(clipboardEnabled, forKey: "clipboardEnabled")
+        defaults.set(clipboardText, forKey: "clipboardText")
+        defaults.set(clipboardImage, forKey: "clipboardImage")
+        defaults.set(clipboardFiles, forKey: "clipboardFiles")
         defaults.set(peerOffsetX, forKey: "peerOffsetX")
         defaults.set(peerOffsetY, forKey: "peerOffsetY")
     }
@@ -701,6 +713,14 @@ final class DeskBridgeModel: ObservableObject {
             ],
             "input": [
                 "reverse_scroll": mode == .server && reverseScroll,
+            ],
+            "clipboard": [
+                "enabled": clipboardEnabled,
+                "text": clipboardText,
+                "image": clipboardImage,
+                "files": clipboardFiles,
+                "poll_ms": 750,
+                "max_transfer_bytes": 33_554_432,
             ],
         ]
 

@@ -88,6 +88,10 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private bool _captureInput = true;
     private bool _debugLogging = true;
     private bool _reverseScroll;
+    private bool _clipboardEnabled = true;
+    private bool _clipboardText = true;
+    private bool _clipboardImage = true;
+    private bool _clipboardFiles = true;
     private string _serverName = "windows";
     private string _allowedClient = "mac";
     private string _clientServerAddress = "192.168.2.5:24800";
@@ -186,6 +190,30 @@ public sealed class MainWindowModel : INotifyPropertyChanged
                 ApplyRuntimeInputSettings();
             }
         }
+    }
+
+    public bool ClipboardEnabled
+    {
+        get => _clipboardEnabled;
+        set => SetField(ref _clipboardEnabled, value);
+    }
+
+    public bool ClipboardText
+    {
+        get => _clipboardText;
+        set => SetField(ref _clipboardText, value);
+    }
+
+    public bool ClipboardImage
+    {
+        get => _clipboardImage;
+        set => SetField(ref _clipboardImage, value);
+    }
+
+    public bool ClipboardFiles
+    {
+        get => _clipboardFiles;
+        set => SetField(ref _clipboardFiles, value);
     }
 
     public string ServerName
@@ -449,6 +477,15 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             },
             reliability = new { heartbeat_ms = 2000, reconnect_max_ms = 10000, stale_after_ms = 6000 },
             input = new { reverse_scroll = IsServerMode && ReverseScroll },
+            clipboard = new
+            {
+                enabled = ClipboardEnabled,
+                text = ClipboardText,
+                image = ClipboardImage,
+                files = ClipboardFiles,
+                poll_ms = 750,
+                max_transfer_bytes = 33554432,
+            },
         };
 
         var directory = Path.GetDirectoryName(ConfigPath);
@@ -480,6 +517,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             var server = root["server"] as JsonObject;
             var client = root["client"] as JsonObject;
             var input = root["input"] as JsonObject;
+            var clipboard = root["clipboard"] as JsonObject;
             var layout = root["layout"] as JsonObject;
             var screens = layout?["screens"] as JsonArray;
 
@@ -505,6 +543,22 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (ReadBool(input, "reverse_scroll") is { } reverseScroll)
             {
                 _reverseScroll = reverseScroll;
+            }
+            if (ReadBool(clipboard, "enabled") is { } clipboardEnabled)
+            {
+                _clipboardEnabled = clipboardEnabled;
+            }
+            if (ReadBool(clipboard, "text") is { } clipboardText)
+            {
+                _clipboardText = clipboardText;
+            }
+            if (ReadBool(clipboard, "image") is { } clipboardImage)
+            {
+                _clipboardImage = clipboardImage;
+            }
+            if (ReadBool(clipboard, "files") is { } clipboardFiles)
+            {
+                _clipboardFiles = clipboardFiles;
             }
             if (screens is not null)
             {
@@ -624,6 +678,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         var sections = new List<string>
         {
             $"Status: {StatusText}\nMode: {Mode}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nClient server: {ClientServerAddress}\nRoute: {RouteSummary}\nDebug capture log: {DebugLogging}\nReverse scroll: {IsServerMode && ReverseScroll}\n" +
+            $"Clipboard: enabled={ClipboardEnabled} text={ClipboardText} image={ClipboardImage} files={ClipboardFiles}\n" +
             $"Admin display model: local={Math.Round(LocalWidth)}x{Math.Round(LocalHeight)} peer={Math.Round(PeerWidth)}x{Math.Round(PeerHeight)} offset=({Math.Round(PeerOffsetX)},{Math.Round(PeerOffsetY)}) {PortalSummary()}\n" +
             $"Daemon: {daemon}\nDeskBridge processes:\n{DescribeDeskBridgeProcesses()}",
         };

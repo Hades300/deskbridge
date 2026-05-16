@@ -205,6 +205,36 @@ pub struct InputPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClipboardPacket {
+    pub seq: u64,
+    pub sent_at_ms: u128,
+    pub content: ClipboardContent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClipboardContent {
+    Text {
+        text: String,
+    },
+    Image {
+        width: u32,
+        height: u32,
+        rgba_base64: String,
+    },
+    Files {
+        files: Vec<ClipboardFile>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClipboardFile {
+    pub name: String,
+    pub size: u64,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DebugCommand {
     DisplayInfo,
@@ -304,6 +334,7 @@ pub enum Message {
     Pong(Pong),
     Input(InputPacket),
     Ack(EventAck),
+    Clipboard(ClipboardPacket),
     DebugRequest(DebugRequest),
     DebugResponse(DebugResponse),
     Status(Status),
@@ -439,6 +470,54 @@ mod tests {
         let encoded = serde_json::to_string(&ack).unwrap();
         let decoded: Message = serde_json::from_str(&encoded).unwrap();
         assert_eq!(ack, decoded);
+    }
+
+    #[test]
+    fn clipboard_text_round_trips() {
+        let packet = Message::Clipboard(ClipboardPacket {
+            seq: 7,
+            sent_at_ms: 123,
+            content: ClipboardContent::Text {
+                text: "hello".to_string(),
+            },
+        });
+        let encoded = serde_json::to_string(&packet).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(packet, decoded);
+    }
+
+    #[test]
+    fn clipboard_image_round_trips() {
+        let packet = Message::Clipboard(ClipboardPacket {
+            seq: 8,
+            sent_at_ms: 123,
+            content: ClipboardContent::Image {
+                width: 1,
+                height: 1,
+                rgba_base64: "AAAA/w==".to_string(),
+            },
+        });
+        let encoded = serde_json::to_string(&packet).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(packet, decoded);
+    }
+
+    #[test]
+    fn clipboard_files_round_trips() {
+        let packet = Message::Clipboard(ClipboardPacket {
+            seq: 9,
+            sent_at_ms: 123,
+            content: ClipboardContent::Files {
+                files: vec![ClipboardFile {
+                    name: "note.txt".to_string(),
+                    size: 5,
+                    data_base64: "aGVsbG8=".to_string(),
+                }],
+            },
+        });
+        let encoded = serde_json::to_string(&packet).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(packet, decoded);
     }
 
     #[test]

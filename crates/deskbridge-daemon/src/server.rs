@@ -1,9 +1,9 @@
 use crate::capture::CaptureEvent;
 use anyhow::{Context, Result};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello,
-    InputEvent, InputPacket, InputRouter, Layout, Message, REPLACED_SESSION_REASON, Size, Status,
-    StatusKind, Welcome, read_frame, write_frame,
+    ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest,
+    DebugResponse, Edge, FrameError, Hello, InputEvent, InputPacket, InputRouter, Layout, Message,
+    REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome, read_frame, write_frame,
 };
 use std::{
     collections::HashMap,
@@ -38,6 +38,7 @@ pub struct ServerOptions {
     pub reverse_scroll: bool,
     pub heartbeat_ms: u64,
     pub layout: Layout,
+    pub clipboard: ClipboardConfig,
 }
 
 type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
@@ -730,6 +731,10 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut capture_probe_seq_index = HashMap::<u64, Uuid>::new();
     let mut perf = ServerPerfMetrics::new();
     let mut last_unrouted_capture_log_ms = 0_u128;
+    let clipboard_runtime = crate::clipboard::ClipboardRuntime::new(options.clipboard.clone());
+    let mut clipboard_rx = clipboard_runtime
+        .as_ref()
+        .map(crate::clipboard::ClipboardRuntime::spawn_watcher);
 
     loop {
         tokio::select! {
@@ -838,6 +843,16 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     reason: REPLACED_SESSION_REASON.to_string(),
                 }).await;
                 return Ok(());
+            }
+            packet = recv_clipboard(&mut clipboard_rx), if clipboard_rx.is_some() => {
+                if let Some(packet) = packet {
+                    let summary = crate::clipboard::content_summary(&packet.content);
+                    write_frame(&mut writer, &Message::Clipboard(packet)).await?;
+                    push_server_log(
+                        &server_log,
+                        format!("clipboard sent session={session_id} target={client_name} {summary}"),
+                    );
+                }
             }
             Some(debug) = debug_rx.recv() => {
                 let request_id = debug.request.request_id;
@@ -1020,6 +1035,23 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             debug!(request_id = %response.request_id, "unexpected debug response");
                         }
                     }
+                    Message::Clipboard(packet) => {
+                        if let Some(runtime) = &clipboard_runtime {
+                            match runtime.apply_remote(packet).await {
+                                Ok(summary) => push_server_log(
+                                    &server_log,
+                                    format!("clipboard applied session={session_id} source={client_name} {summary}"),
+                                ),
+                                Err(err) => {
+                                    push_server_log(
+                                        &server_log,
+                                        format!("clipboard apply failed session={session_id} source={client_name} error={err:#}"),
+                                    );
+                                    warn!(error = %err, "remote clipboard apply failed");
+                                }
+                            }
+                        }
+                    }
                     Message::Goodbye { reason } => {
                         info!(reason, "client goodbye");
                         return Ok(());
@@ -1028,6 +1060,15 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                 }
             }
         }
+    }
+}
+
+async fn recv_clipboard(
+    rx: &mut Option<mpsc::UnboundedReceiver<ClipboardPacket>>,
+) -> Option<ClipboardPacket> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -1210,6 +1251,15 @@ async fn build_server_logs_response(
     ));
     logs.push(format!("startup_reverse_scroll={}", options.reverse_scroll));
     logs.push(format!("heartbeat_ms={}", options.heartbeat_ms));
+    logs.push(format!(
+        "clipboard enabled={} text={} image={} files={} poll_ms={} max_transfer_bytes={}",
+        options.clipboard.enabled,
+        options.clipboard.text,
+        options.clipboard.image,
+        options.clipboard.files,
+        options.clipboard.poll_ms,
+        options.clipboard.max_transfer_bytes
+    ));
     logs.extend(platform_screen_debug_lines());
 
     let sessions = sessions.lock().await;
@@ -2029,6 +2079,10 @@ mod tests {
             reverse_scroll: false,
             heartbeat_ms: DEFAULT_HEARTBEAT_MS,
             layout: test_layout(),
+            clipboard: ClipboardConfig {
+                enabled: false,
+                ..ClipboardConfig::default()
+            },
         }
     }
 

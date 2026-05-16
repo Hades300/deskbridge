@@ -41,6 +41,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="104"/>
@@ -60,14 +61,22 @@
           <TextBlock Grid.Row="2" Text="Config" VerticalAlignment="Center" Margin="0,10,0,0"/>
           <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ConfigPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0"/>
 
-          <TextBlock Grid.Row="3" Text="Input" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-          <CheckBox Grid.Row="3" Grid.Column="1" Content="Capture keyboard and mouse" IsChecked="{Binding CaptureInput}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <TextBlock Grid.Row="3" Text="Clipboard" VerticalAlignment="Center" Margin="0,10,0,0"/>
+          <WrapPanel Grid.Row="3" Grid.Column="1" Margin="0,10,0,0">
+            <CheckBox Content="Sync" IsChecked="{Binding ClipboardEnabled}" Margin="0,0,12,0"/>
+            <CheckBox Content="Text" IsChecked="{Binding ClipboardText}" Margin="0,0,12,0"/>
+            <CheckBox Content="Image" IsChecked="{Binding ClipboardImage}" Margin="0,0,12,0"/>
+            <CheckBox Content="Files" IsChecked="{Binding ClipboardFiles}"/>
+          </WrapPanel>
 
-          <TextBlock Grid.Row="4" Text="Wheel" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-          <CheckBox Grid.Row="4" Grid.Column="1" Content="Reverse remote wheel" IsChecked="{Binding ReverseScroll}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <TextBlock Grid.Row="4" Text="Input" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <CheckBox Grid.Row="4" Grid.Column="1" Content="Capture keyboard and mouse" IsChecked="{Binding CaptureInput}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
 
-          <TextBlock Grid.Row="5" Text="Debug" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-          <CheckBox Grid.Row="5" Grid.Column="1" Content="Keep capture route history" IsChecked="{Binding DebugLogging}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <TextBlock Grid.Row="5" Text="Wheel" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <CheckBox Grid.Row="5" Grid.Column="1" Content="Reverse remote wheel" IsChecked="{Binding ReverseScroll}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+
+          <TextBlock Grid.Row="6" Text="Debug" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <CheckBox Grid.Row="6" Grid.Column="1" Content="Keep capture route history" IsChecked="{Binding DebugLogging}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
         </Grid>
       </GroupBox>
 

@@ -9,6 +9,8 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+arboard.workspace = true
+base64.workspace = true
 clap.workspace = true
 deskbridge-core = { path = "../deskbridge-core" }
 enigo.workspace = true

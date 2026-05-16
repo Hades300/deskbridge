@@ -1,6 +1,7 @@
 mod build_info;
 mod capture;
 mod client;
+mod clipboard;
 mod debugctl;
 mod diag;
 mod input;
@@ -12,8 +13,8 @@ use crate::input::InputSink;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, DebugCommand, DeskBridgeConfig, Edge, InputEvent, InputPacket,
-    InputRouter, Layout, Link, Screen, Size, simulate_route,
+    ClipboardConfig, DEFAULT_HEARTBEAT_MS, DebugCommand, DeskBridgeConfig, Edge, InputEvent,
+    InputPacket, InputRouter, Layout, Link, Screen, Size, simulate_route,
 };
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 use tracing_subscriber::EnvFilter;
@@ -232,6 +233,13 @@ async fn main() -> Result<()> {
                 .unwrap_or(6_000);
             let reverse_scroll =
                 reverse_scroll || config.as_ref().is_some_and(|cfg| cfg.input.reverse_scroll);
+            let mut clipboard = config
+                .as_ref()
+                .map(|cfg| cfg.clipboard.clone())
+                .unwrap_or_else(ClipboardConfig::default);
+            if dry_run {
+                clipboard.enabled = false;
+            }
             client::run(client::ClientOptions {
                 server,
                 name,
@@ -241,6 +249,7 @@ async fn main() -> Result<()> {
                 reconnect_max_ms,
                 stale_after_ms,
                 max_events,
+                clipboard,
             })
             .await
         }
@@ -277,6 +286,10 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| default_layout(&name, &allow));
             let reverse_scroll =
                 reverse_scroll || config.as_ref().is_some_and(|cfg| cfg.input.reverse_scroll);
+            let clipboard = config
+                .as_ref()
+                .map(|cfg| cfg.clipboard.clone())
+                .unwrap_or_else(ClipboardConfig::default);
             server::run(server::ServerOptions {
                 listen,
                 name,
@@ -287,6 +300,7 @@ async fn main() -> Result<()> {
                 reverse_scroll,
                 heartbeat_ms,
                 layout,
+                clipboard,
             })
             .await
         }

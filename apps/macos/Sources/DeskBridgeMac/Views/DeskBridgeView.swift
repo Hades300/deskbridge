@@ -97,6 +97,25 @@ struct DeskBridgeView: View {
                 .onChange(of: model.reverseScroll) { model.applyRuntimeInputSettings() }
             }
 
+            GridRow {
+                Label("Clipboard", systemImage: "doc.on.clipboard")
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 14) {
+                    Toggle("Sync", isOn: $model.clipboardEnabled)
+                        .toggleStyle(.checkbox)
+                    Toggle("Text", isOn: $model.clipboardText)
+                        .toggleStyle(.checkbox)
+                    Toggle("Image", isOn: $model.clipboardImage)
+                        .toggleStyle(.checkbox)
+                    Toggle("Files", isOn: $model.clipboardFiles)
+                        .toggleStyle(.checkbox)
+                }
+                .onChange(of: model.clipboardEnabled) { model.save() }
+                .onChange(of: model.clipboardText) { model.save() }
+                .onChange(of: model.clipboardImage) { model.save() }
+                .onChange(of: model.clipboardFiles) { model.save() }
+            }
+
             if model.mode == .server {
                 GridRow {
                     Label("Capture", systemImage: "cursorarrow.motionlines")

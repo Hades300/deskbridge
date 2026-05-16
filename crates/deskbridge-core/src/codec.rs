@@ -3,7 +3,7 @@ use std::io;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum FrameError {

@@ -11,6 +11,8 @@ pub struct DeskBridgeConfig {
     pub reliability: ReliabilityConfig,
     #[serde(default)]
     pub input: InputConfig,
+    #[serde(default)]
+    pub clipboard: ClipboardConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -36,6 +38,47 @@ pub struct ReliabilityConfig {
 pub struct InputConfig {
     #[serde(default)]
     pub reverse_scroll: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClipboardConfig {
+    #[serde(default = "default_clipboard_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_clipboard_enabled")]
+    pub text: bool,
+    #[serde(default = "default_clipboard_enabled")]
+    pub image: bool,
+    #[serde(default = "default_clipboard_enabled")]
+    pub files: bool,
+    #[serde(default = "default_clipboard_poll_ms")]
+    pub poll_ms: u64,
+    #[serde(default = "default_clipboard_max_transfer_bytes")]
+    pub max_transfer_bytes: u64,
+}
+
+impl Default for ClipboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            text: true,
+            image: true,
+            files: true,
+            poll_ms: default_clipboard_poll_ms(),
+            max_transfer_bytes: default_clipboard_max_transfer_bytes(),
+        }
+    }
+}
+
+fn default_clipboard_enabled() -> bool {
+    true
+}
+
+fn default_clipboard_poll_ms() -> u64 {
+    750
+}
+
+fn default_clipboard_max_transfer_bytes() -> u64 {
+    32 * 1024 * 1024
 }
 
 #[derive(Debug, Error)]
@@ -90,6 +133,7 @@ impl Default for DeskBridgeConfig {
                 stale_after_ms: 6_000,
             },
             input: InputConfig::default(),
+            clipboard: ClipboardConfig::default(),
         }
     }
 }

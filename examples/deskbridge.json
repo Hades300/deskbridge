@@ -36,5 +36,13 @@
     "heartbeat_ms": 2000,
     "reconnect_max_ms": 10000,
     "stale_after_ms": 6000
+  },
+  "clipboard": {
+    "enabled": true,
+    "text": true,
+    "image": true,
+    "files": true,
+    "poll_ms": 750,
+    "max_transfer_bytes": 33554432
   }
 }

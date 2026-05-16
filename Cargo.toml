@@ -14,6 +14,8 @@ rust-version = "1.95"
 [workspace.dependencies]
 anyhow = "1.0.100"
 async-trait = "0.1.89"
+arboard = "3.6.1"
+base64 = "0.22.1"
 clap = { version = "4.5.53", features = ["derive", "env"] }
 core-foundation = "0.10.1"
 core-graphics = "0.25.0"

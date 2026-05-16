@@ -1,9 +1,9 @@
 use crate::input::{EnigoSink, InputSink, LogSink};
 use anyhow::{Context, Result, anyhow};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, EventAck,
-    FrameError, Hello, InputEvent, InputPacket, Message, Ping, Pong, REPLACED_SESSION_REASON,
-    read_frame, write_frame,
+    ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest,
+    DebugResponse, DisplaySnapshot, EventAck, FrameError, Hello, InputEvent, InputPacket, Message,
+    Ping, Pong, REPLACED_SESSION_REASON, read_frame, write_frame,
 };
 use std::collections::VecDeque;
 use std::{
@@ -23,6 +23,7 @@ pub struct ClientOptions {
     pub reconnect_max_ms: u64,
     pub stale_after_ms: u64,
     pub max_events: Option<u64>,
+    pub clipboard: ClipboardConfig,
 }
 
 pub async fn run(options: ClientOptions) -> Result<()> {
@@ -93,6 +94,10 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     } else {
         Box::new(EnigoSink::new()?)
     };
+    let clipboard_runtime = crate::clipboard::ClipboardRuntime::new(options.clipboard.clone());
+    let mut clipboard_rx = clipboard_runtime
+        .as_ref()
+        .map(crate::clipboard::ClipboardRuntime::spawn_watcher);
     let (reader, mut writer) = stream.into_split();
     let mut inbound = spawn_reader(reader);
 
@@ -132,6 +137,13 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                     ));
                 }
             }
+            packet = recv_clipboard(&mut clipboard_rx), if clipboard_rx.is_some() => {
+                if let Some(packet) = packet {
+                    let summary = crate::clipboard::content_summary(&packet.content);
+                    write_frame(&mut writer, &Message::Clipboard(packet)).await?;
+                    debug_state.push(format!("sent clipboard {summary}"));
+                }
+            }
             msg = inbound.recv() => {
                 let message = msg
                     .ok_or_else(|| anyhow!("server reader stopped"))??;
@@ -167,6 +179,17 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                             return Ok(ClientSessionOutcome::Ended);
                         }
                     }
+                    Message::Clipboard(packet) => {
+                        if let Some(runtime) = &clipboard_runtime {
+                            match runtime.apply_remote(packet).await {
+                                Ok(summary) => debug_state.push(format!("applied remote clipboard {summary}")),
+                                Err(err) => {
+                                    debug_state.push(format!("remote clipboard apply failed: {err:#}"));
+                                    warn!(error = %err, "remote clipboard apply failed");
+                                }
+                            }
+                        }
+                    }
                     Message::DebugRequest(request) => {
                         let response = handle_debug_request(request, sink.as_mut(), &mut debug_state).await;
                         write_frame(&mut writer, &Message::DebugResponse(response)).await?;
@@ -184,6 +207,15 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                 }
             }
         }
+    }
+}
+
+async fn recv_clipboard(
+    rx: &mut Option<mpsc::UnboundedReceiver<ClipboardPacket>>,
+) -> Option<ClipboardPacket> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -575,6 +607,10 @@ mod tests {
                 reconnect_max_ms: 500,
                 stale_after_ms: 250,
                 max_events: Some(1),
+                clipboard: ClipboardConfig {
+                    enabled: false,
+                    ..ClipboardConfig::default()
+                },
             }),
         )
         .await

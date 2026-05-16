@@ -24,10 +24,11 @@ Implemented:
 - Windows WPF admin panel scaffold for server configuration and `--capture` launch.
 - macOS input injection backend through `enigo` plus bounded CoreGraphics pointer warping.
 - Remote debug control for client display info, peer metadata, target logs, server logs, route probes, and capture-path probes.
+- Shared clipboard sync for text, images, and regular files.
 
 Not complete beyond the MVP:
 
-- Clipboard sync.
+- Directory clipboard transfer and large-file streaming.
 - Signed installers.
 - Full Windows runtime validation from this Mac-only environment.
 
@@ -191,6 +192,23 @@ The default layout places the Mac to the right of the Windows screen:
 ```
 
 Use `examples/deskbridge.json` as the editable starting point.
+
+Clipboard sync is enabled by default in generated configs:
+
+```json
+{
+  "clipboard": {
+    "enabled": true,
+    "text": true,
+    "image": true,
+    "files": true,
+    "poll_ms": 750,
+    "max_transfer_bytes": 33554432
+  }
+}
+```
+
+Regular files copied on one machine are transferred to the peer and staged under DeskBridge's application support data before being placed on the peer clipboard. Directory copy/paste is intentionally not transferred yet.
 
 ## License
 
