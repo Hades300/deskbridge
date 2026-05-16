@@ -248,6 +248,7 @@ final class DeskBridgeModel: ObservableObject {
                 let sections: [(String, [String])] = [
                     ("Local version", ["version"]),
                     ("Reachability", ["diag", "--server", server, "--name", name]),
+                    ("Runtime input settings", ["debug", "--server", server, "--name", name, "input-settings"]),
                     ("Server debug log", ["debug", "--server", server, "--name", name, "server-logs"]),
                     ("Route status", ["debug", "--server", server, "--name", name, "route-status"]),
                     ("Client peer info", ["debug", "--server", server, "--name", name, "peer-info"]),
@@ -276,6 +277,46 @@ final class DeskBridgeModel: ObservableObject {
             lastDiagnostics = "Wrote config:\n\(configPath.path)\n\n\(entryDescription)"
         } catch {
             lastDiagnostics = error.localizedDescription
+        }
+    }
+
+    func applyRuntimeInputSettings() {
+        save()
+
+        guard mode == .server else {
+            return
+        }
+
+        do {
+            try writeGeneratedConfig()
+        } catch {
+            lastDiagnostics = error.localizedDescription
+            return
+        }
+
+        guard process?.isRunning == true else {
+            return
+        }
+
+        let binary = binaryPath
+        let server = localDebugServerAddress
+        let name = peerScreenName
+        let reverseValue = reverseScroll ? "true" : "false"
+
+        Task {
+            let output = await Task.detached {
+                runDeskBridgeProcess(
+                    binary: binary,
+                    arguments: [
+                        "debug",
+                        "--server", server,
+                        "--name", name,
+                        "input-settings",
+                        "--reverse-scroll", reverseValue,
+                    ]
+                )
+            }.value
+            lastDiagnostics = "Applied runtime input settings:\n\(output)"
         }
     }
 

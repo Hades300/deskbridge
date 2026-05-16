@@ -179,7 +179,13 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     public bool ReverseScroll
     {
         get => _reverseScroll;
-        set => SetField(ref _reverseScroll, value);
+        set
+        {
+            if (SetField(ref _reverseScroll, value))
+            {
+                ApplyRuntimeInputSettings();
+            }
+        }
     }
 
     public string ServerName
@@ -450,6 +456,52 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         Diagnostics = $"Wrote config:\n{ConfigPath}";
     }
 
+    private void ApplyRuntimeInputSettings()
+    {
+        SaveConfig();
+
+        if (!IsServerMode)
+        {
+            return;
+        }
+
+        if (_serverProcess is not { HasExited: false })
+        {
+            return;
+        }
+
+        var daemon = LocateDaemon();
+        if (!File.Exists(daemon))
+        {
+            return;
+        }
+
+        var localServer = $"127.0.0.1:{ListenPort()}";
+        var targetName = AllowedClient;
+        var reverseScroll = ReverseScroll.ToString().ToLowerInvariant();
+
+        _ = Task.Run(() => RunDaemonCommand(
+            daemon,
+            new[]
+            {
+                "debug",
+                "--server",
+                localServer,
+                "--name",
+                targetName,
+                "input-settings",
+                "--reverse-scroll",
+                reverseScroll,
+            },
+            3000)).ContinueWith(task =>
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                Diagnostics = $"Applied runtime input settings:\n{task.Result}";
+            });
+        });
+    }
+
     private void Diagnose()
     {
         var port = ListenPort();
@@ -465,6 +517,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         if (File.Exists(daemon))
         {
             sections.Add("Local daemon version:\n" + RunDaemonCommand(daemon, new[] { "version" }, 3000));
+            sections.Add("Runtime input settings:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "input-settings" }));
             sections.Add("Server debug log:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "server-logs" }));
             sections.Add("Route status:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "route-status" }));
             sections.Add("Client peer info:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "peer-info" }));
@@ -474,6 +527,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         sections.Add(
             "From the Mac, run:\n" +
             $"deskbridge diag --server <WINDOWS_LAN_IP>:{port} --name mac\n" +
+            $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac input-settings\n" +
             $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac server-logs\n" +
             $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac route-status\n" +
             $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac route-probe --steps 3 --dx 80 --dy -2\n" +

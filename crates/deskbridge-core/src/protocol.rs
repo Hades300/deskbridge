@@ -215,6 +215,10 @@ pub enum DebugCommand {
         dy: i32,
     },
     RouteStatus,
+    InputSettings {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reverse_scroll: Option<bool>,
+    },
     CaptureProbe {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         edge: Option<Edge>,
@@ -389,6 +393,19 @@ mod tests {
         let request = Message::DebugRequest(DebugRequest {
             request_id: Uuid::new_v4(),
             command: DebugCommand::RouteStatus,
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn debug_input_settings_round_trips() {
+        let request = Message::DebugRequest(DebugRequest {
+            request_id: Uuid::new_v4(),
+            command: DebugCommand::InputSettings {
+                reverse_scroll: Some(true),
+            },
         });
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: Message = serde_json::from_str(&encoded).unwrap();

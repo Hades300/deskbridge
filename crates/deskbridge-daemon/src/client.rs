@@ -293,6 +293,7 @@ async fn handle_debug_request(
             .with_request_id(request.request_id),
         DebugCommand::RouteProbe { .. }
         | DebugCommand::RouteStatus
+        | DebugCommand::InputSettings { .. }
         | DebugCommand::CaptureProbe { .. }
         | DebugCommand::ServerLogs => debug_response_error(
             request.request_id,

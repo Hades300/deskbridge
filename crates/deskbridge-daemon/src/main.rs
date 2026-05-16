@@ -173,6 +173,11 @@ enum DebugCliCommand {
     },
     /// Read the server-side route layout currently used by the active target session.
     RouteStatus,
+    /// Read or update server-side input settings without restarting the server.
+    InputSettings {
+        #[arg(long, value_parser = clap::value_parser!(bool))]
+        reverse_scroll: Option<bool>,
+    },
     /// Inject synthetic capture events into the server capture path and wait for client acks.
     CaptureProbe {
         #[arg(long, value_parser = parse_edge)]
@@ -431,6 +436,9 @@ fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
             dy,
         },
         DebugCliCommand::RouteStatus => DebugCommand::RouteStatus,
+        DebugCliCommand::InputSettings { reverse_scroll } => {
+            DebugCommand::InputSettings { reverse_scroll }
+        }
         DebugCliCommand::CaptureProbe {
             edge,
             steps,

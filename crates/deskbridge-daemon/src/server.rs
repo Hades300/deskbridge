@@ -11,7 +11,10 @@ use std::{
     collections::VecDeque,
     io,
     net::SocketAddr,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -38,6 +41,36 @@ pub struct ServerOptions {
 
 type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
 type ServerDebugLog = Arc<StdMutex<VecDeque<String>>>;
+type ServerRuntimeSettings = Arc<RuntimeSettings>;
+
+#[derive(Clone)]
+struct ServerShared {
+    capture_tx: crate::capture::CaptureSender,
+    sessions: SessionRegistry,
+    runtime_settings: ServerRuntimeSettings,
+    server_log: ServerDebugLog,
+}
+
+#[derive(Debug)]
+struct RuntimeSettings {
+    reverse_scroll: AtomicBool,
+}
+
+impl RuntimeSettings {
+    fn new(reverse_scroll: bool) -> ServerRuntimeSettings {
+        Arc::new(Self {
+            reverse_scroll: AtomicBool::new(reverse_scroll),
+        })
+    }
+
+    fn reverse_scroll(&self) -> bool {
+        self.reverse_scroll.load(Ordering::Relaxed)
+    }
+
+    fn set_reverse_scroll(&self, value: bool) -> bool {
+        self.reverse_scroll.swap(value, Ordering::Relaxed)
+    }
+}
 
 #[derive(Debug)]
 struct SessionHandle {
@@ -92,6 +125,7 @@ struct PendingCaptureProbe {
 
 struct ClientSessionRuntime<'a> {
     options: &'a ServerOptions,
+    runtime_settings: ServerRuntimeSettings,
     client_name: &'a str,
     session_id: Uuid,
     peer: SocketAddr,
@@ -136,6 +170,7 @@ pub async fn run(options: ServerOptions) -> Result<()> {
     let (capture_tx, _) = crate::capture::channel();
     let sessions = SessionRegistry::default();
     let server_log = new_server_debug_log();
+    let runtime_settings = RuntimeSettings::new(options.reverse_scroll);
 
     if options.capture {
         start_platform_capture(capture_tx.clone())?;
@@ -155,26 +190,21 @@ pub async fn run(options: ServerOptions) -> Result<()> {
             crate::build_info::platform()
         ),
     );
+    let shared = ServerShared {
+        capture_tx,
+        sessions,
+        runtime_settings,
+        server_log: server_log.clone(),
+    };
 
     loop {
         let (stream, peer) = listener.accept().await?;
         let options = options.clone();
         let allow = allow.clone();
-        let capture_tx = capture_tx.clone();
-        let sessions = sessions.clone();
+        let shared = shared.clone();
         let server_log = server_log.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_client(
-                stream,
-                peer,
-                options,
-                allow,
-                capture_tx,
-                sessions,
-                server_log.clone(),
-            )
-            .await
-            {
+            if let Err(err) = handle_client(stream, peer, options, allow, shared).await {
                 push_server_log(
                     &server_log,
                     format!("client ended peer={peer} error={err:#}"),
@@ -251,10 +281,14 @@ async fn handle_client(
     peer: SocketAddr,
     mut options: ServerOptions,
     allow: HashSet<String>,
-    capture_tx: crate::capture::CaptureSender,
-    sessions: SessionRegistry,
-    server_log: ServerDebugLog,
+    shared: ServerShared,
 ) -> Result<()> {
+    let ServerShared {
+        capture_tx,
+        sessions,
+        runtime_settings,
+        server_log,
+    } = shared;
     stream.set_nodelay(true)?;
     let hello = match read_frame(&mut stream).await {
         Ok(Message::Hello(hello)) => hello,
@@ -334,6 +368,7 @@ async fn handle_client(
             &hello.screen_name,
             &options,
             sessions,
+            runtime_settings,
             server_log,
         )
         .await;
@@ -397,6 +432,7 @@ async fn handle_client(
         stream,
         ClientSessionRuntime {
             options: &options,
+            runtime_settings,
             client_name: &hello.screen_name,
             session_id,
             peer,
@@ -432,6 +468,7 @@ async fn handle_client(
 async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>) -> Result<()> {
     let ClientSessionRuntime {
         options,
+        runtime_settings,
         client_name,
         session_id,
         peer,
@@ -466,7 +503,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     client_name,
                     demo_stage,
                     ),
-                    options.reverse_scroll,
+                    runtime_settings.reverse_scroll(),
                 );
                 demo_stage += 1;
                 write_frame(&mut writer, &Message::Input(InputPacket {
@@ -527,7 +564,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
 
                     if let Some(event) = routed {
                         seq += 1;
-                        let event = transform_routed_input_event(event, options.reverse_scroll);
+                        let event = transform_routed_input_event(event, runtime_settings.reverse_scroll());
                         write_frame(&mut writer, &Message::Input(InputPacket {
                             seq,
                             event,
@@ -575,7 +612,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             ok: true,
                             message: "route status read".to_string(),
                             display: None,
-                            logs: build_route_status_logs(options, client_name, &demo_router, route_debug.request_id),
+                            logs: build_route_status_logs(options, &runtime_settings, client_name, &demo_router, route_debug.request_id),
                         });
                         continue;
                     }
@@ -598,7 +635,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         let mut seqs = HashSet::new();
                         for event in events {
                             seq += 1;
-                            let event = transform_routed_input_event(event, options.reverse_scroll);
+                            let event = transform_routed_input_event(event, runtime_settings.reverse_scroll());
                             write_frame(&mut writer, &Message::Input(InputPacket {
                                 seq,
                                 event,
@@ -745,6 +782,7 @@ async fn handle_diagnostic_session(
     target_screen: &str,
     options: &ServerOptions,
     sessions: SessionRegistry,
+    runtime_settings: ServerRuntimeSettings,
     server_log: ServerDebugLog,
 ) -> Result<()> {
     match time::timeout(Duration::from_secs(5), read_frame(stream)).await {
@@ -754,6 +792,7 @@ async fn handle_diagnostic_session(
                     request.request_id,
                     target_screen,
                     options,
+                    &runtime_settings,
                     &sessions,
                     &server_log,
                 )
@@ -811,6 +850,16 @@ async fn handle_diagnostic_session(
                 )
                 .await
             }
+            DebugCommand::InputSettings { reverse_scroll } => {
+                let response = update_runtime_input_settings(
+                    request.request_id,
+                    reverse_scroll,
+                    &runtime_settings,
+                    &server_log,
+                );
+                write_frame(stream, &Message::DebugResponse(response)).await?;
+                Ok(())
+            }
             _ => forward_debug_request(stream, target_screen, sessions, request).await,
         },
         Ok(Ok(other)) => {
@@ -859,6 +908,7 @@ async fn build_server_logs_response(
     request_id: Uuid,
     target_screen: &str,
     options: &ServerOptions,
+    runtime_settings: &ServerRuntimeSettings,
     sessions: &SessionRegistry,
     server_log: &ServerDebugLog,
 ) -> DebugResponse {
@@ -871,7 +921,11 @@ async fn build_server_logs_response(
     logs.push(format!("capture={}", options.capture));
     logs.push(format!("debug_capture_log={}", options.debug_capture_log));
     logs.push(format!("demo_events={}", options.demo_events));
-    logs.push(format!("reverse_scroll={}", options.reverse_scroll));
+    logs.push(format!(
+        "reverse_scroll={}",
+        runtime_settings.reverse_scroll()
+    ));
+    logs.push(format!("startup_reverse_scroll={}", options.reverse_scroll));
     logs.push(format!("heartbeat_ms={}", options.heartbeat_ms));
     logs.extend(platform_screen_debug_lines());
 
@@ -906,6 +960,43 @@ async fn build_server_logs_response(
         request_id,
         ok: true,
         message: "server debug log read".to_string(),
+        display: None,
+        logs,
+    }
+}
+
+fn update_runtime_input_settings(
+    request_id: Uuid,
+    reverse_scroll: Option<bool>,
+    runtime_settings: &ServerRuntimeSettings,
+    server_log: &ServerDebugLog,
+) -> DebugResponse {
+    let mut logs = Vec::new();
+    let mut changed = false;
+
+    if let Some(value) = reverse_scroll {
+        let previous = runtime_settings.set_reverse_scroll(value);
+        changed = previous != value;
+        logs.push(format!("reverse_scroll: {previous} -> {value}"));
+        push_server_log(
+            server_log,
+            format!("runtime input setting updated reverse_scroll={value} previous={previous}"),
+        );
+    }
+
+    logs.push(format!(
+        "reverse_scroll={}",
+        runtime_settings.reverse_scroll()
+    ));
+
+    DebugResponse {
+        request_id,
+        ok: true,
+        message: if changed {
+            "server input settings updated".to_string()
+        } else {
+            "server input settings unchanged".to_string()
+        },
         display: None,
         logs,
     }
@@ -1186,6 +1277,7 @@ fn maybe_finish_capture_probe(
 
 fn build_route_status_logs(
     options: &ServerOptions,
+    runtime_settings: &ServerRuntimeSettings,
     target_screen: &str,
     router: &Option<InputRouter>,
     request_id: Uuid,
@@ -1200,7 +1292,7 @@ fn build_route_status_logs(
             options.listen,
             options.capture,
             options.demo_events,
-            options.reverse_scroll,
+            runtime_settings.reverse_scroll(),
             options.heartbeat_ms
         ),
         format!(
@@ -1657,6 +1749,24 @@ mod tests {
         }
     }
 
+    fn test_runtime_settings(options: &ServerOptions) -> ServerRuntimeSettings {
+        RuntimeSettings::new(options.reverse_scroll)
+    }
+
+    fn test_shared(
+        capture_tx: crate::capture::CaptureSender,
+        sessions: SessionRegistry,
+        runtime_settings: ServerRuntimeSettings,
+        server_log: ServerDebugLog,
+    ) -> ServerShared {
+        ServerShared {
+            capture_tx,
+            sessions,
+            runtime_settings,
+            server_log,
+        }
+    }
+
     #[tokio::test]
     async fn diagnostic_handshake_does_not_replace_input_client() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1666,13 +1776,18 @@ mod tests {
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
         let server_log = new_server_debug_log();
+        let runtime_settings = test_runtime_settings(&options);
+        let shared = test_shared(
+            capture_tx.clone(),
+            sessions.clone(),
+            runtime_settings,
+            server_log.clone(),
+        );
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
-            let capture_tx = capture_tx.clone();
-            let sessions = sessions.clone();
-            let server_log = server_log.clone();
+            let shared = shared.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1681,9 +1796,7 @@ mod tests {
                         peer,
                         options.clone(),
                         allow.clone(),
-                        capture_tx.clone(),
-                        sessions.clone(),
-                        server_log.clone(),
+                        shared.clone(),
                     ));
                 }
             }
@@ -1740,13 +1853,18 @@ mod tests {
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
         let server_log = new_server_debug_log();
+        let runtime_settings = test_runtime_settings(&options);
+        let shared = test_shared(
+            capture_tx.clone(),
+            sessions.clone(),
+            runtime_settings,
+            server_log.clone(),
+        );
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
-            let capture_tx = capture_tx.clone();
-            let sessions = sessions.clone();
-            let server_log = server_log.clone();
+            let shared = shared.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1755,9 +1873,7 @@ mod tests {
                         peer,
                         options.clone(),
                         allow.clone(),
-                        capture_tx.clone(),
-                        sessions.clone(),
-                        server_log.clone(),
+                        shared.clone(),
                     ));
                 }
             }
@@ -1848,13 +1964,18 @@ mod tests {
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
         let server_log = new_server_debug_log();
+        let runtime_settings = test_runtime_settings(&options);
+        let shared = test_shared(
+            capture_tx.clone(),
+            sessions.clone(),
+            runtime_settings,
+            server_log.clone(),
+        );
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
-            let capture_tx = capture_tx.clone();
-            let sessions = sessions.clone();
-            let server_log = server_log.clone();
+            let shared = shared.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1863,9 +1984,7 @@ mod tests {
                         peer,
                         options.clone(),
                         allow.clone(),
-                        capture_tx.clone(),
-                        sessions.clone(),
-                        server_log.clone(),
+                        shared.clone(),
                     ));
                 }
             }
@@ -1954,13 +2073,18 @@ mod tests {
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
         let server_log = new_server_debug_log();
+        let runtime_settings = test_runtime_settings(&options);
+        let shared = test_shared(
+            capture_tx.clone(),
+            sessions.clone(),
+            runtime_settings,
+            server_log.clone(),
+        );
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
-            let capture_tx = capture_tx.clone();
-            let sessions = sessions.clone();
-            let server_log = server_log.clone();
+            let shared = shared.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1969,9 +2093,7 @@ mod tests {
                         peer,
                         options.clone(),
                         allow.clone(),
-                        capture_tx.clone(),
-                        sessions.clone(),
-                        server_log.clone(),
+                        shared.clone(),
                     ));
                 }
             }
@@ -2069,13 +2191,18 @@ mod tests {
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
         let server_log = new_server_debug_log();
+        let runtime_settings = test_runtime_settings(&options);
+        let shared = test_shared(
+            capture_tx.clone(),
+            sessions.clone(),
+            runtime_settings,
+            server_log.clone(),
+        );
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
-            let capture_tx = capture_tx.clone();
-            let sessions = sessions.clone();
-            let server_log = server_log.clone();
+            let shared = shared.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -2084,9 +2211,7 @@ mod tests {
                         peer,
                         options.clone(),
                         allow.clone(),
-                        capture_tx.clone(),
-                        sessions.clone(),
-                        server_log.clone(),
+                        shared.clone(),
                     ));
                 }
             }
@@ -2157,18 +2282,17 @@ mod tests {
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
         let server_log = new_server_debug_log();
+        let runtime_settings = test_runtime_settings(&options);
+        let shared = test_shared(capture_tx, sessions, runtime_settings, server_log.clone());
         push_server_log(&server_log, "test history entry");
 
         tokio::spawn({
-            let sessions = sessions.clone();
-            let server_log = server_log.clone();
+            let shared = shared.clone();
             async move {
                 let (stream, peer) = listener.accept().await.unwrap();
-                handle_client(
-                    stream, peer, options, allow, capture_tx, sessions, server_log,
-                )
-                .await
-                .unwrap();
+                handle_client(stream, peer, options, allow, shared)
+                    .await
+                    .unwrap();
             }
         });
 
@@ -2218,6 +2342,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diagnostic_input_settings_update_changes_runtime_state() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let options = test_options(listen);
+        let allow = HashSet::from(["mac".to_string()]);
+        let (capture_tx, _) = crate::capture::channel();
+        let sessions = SessionRegistry::default();
+        let server_log = new_server_debug_log();
+        let runtime_settings = test_runtime_settings(&options);
+        let shared = test_shared(
+            capture_tx,
+            sessions,
+            runtime_settings.clone(),
+            server_log.clone(),
+        );
+
+        tokio::spawn({
+            let shared = shared.clone();
+            async move {
+                let (stream, peer) = listener.accept().await.unwrap();
+                handle_client(stream, peer, options, allow, shared)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let mut diag = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut diag, &Message::Hello(Hello::diagnostic("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut diag).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let request_id = Uuid::new_v4();
+        write_frame(
+            &mut diag,
+            &Message::DebugRequest(DebugRequest {
+                request_id,
+                command: DebugCommand::InputSettings {
+                    reverse_scroll: Some(true),
+                },
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = match tokio::time::timeout(Duration::from_secs(1), read_frame(&mut diag))
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Message::DebugResponse(response) => response,
+            other => panic!("expected input settings debug response, got {other:?}"),
+        };
+        assert_eq!(response.request_id, request_id);
+        assert!(response.ok);
+        assert!(runtime_settings.reverse_scroll());
+        assert!(
+            response
+                .logs
+                .iter()
+                .any(|line| line == "reverse_scroll: false -> true")
+        );
+        assert!(server_log_snapshot(&server_log).iter().any(|line| {
+            line.contains("runtime input setting updated reverse_scroll=true previous=false")
+        }));
+    }
+
+    #[tokio::test]
     async fn ended_client_session_is_removed_from_registry() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listen = listener.local_addr().unwrap();
@@ -2226,17 +2421,21 @@ mod tests {
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
         let server_log = new_server_debug_log();
+        let runtime_settings = test_runtime_settings(&options);
+        let shared = test_shared(
+            capture_tx,
+            sessions.clone(),
+            runtime_settings,
+            server_log.clone(),
+        );
 
         let server_task = tokio::spawn({
-            let sessions = sessions.clone();
-            let server_log = server_log.clone();
+            let shared = shared.clone();
             async move {
                 let (stream, peer) = listener.accept().await.unwrap();
-                handle_client(
-                    stream, peer, options, allow, capture_tx, sessions, server_log,
-                )
-                .await
-                .unwrap();
+                handle_client(stream, peer, options, allow, shared)
+                    .await
+                    .unwrap();
             }
         });
 

@@ -99,7 +99,7 @@ struct DeskBridgeView: View {
                     }
                 }
                 .onChange(of: model.autoReconnect) { model.save() }
-                .onChange(of: model.reverseScroll) { model.save() }
+                .onChange(of: model.reverseScroll) { model.applyRuntimeInputSettings() }
             }
 
             if model.mode == .server {
