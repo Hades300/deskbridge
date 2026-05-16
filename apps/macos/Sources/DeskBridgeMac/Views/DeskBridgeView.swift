@@ -81,6 +81,12 @@ struct DeskBridgeView: View {
                 Label("Diagnose", systemImage: "stethoscope")
             }
 
+            Button {
+                model.openAccessibilitySettings()
+            } label: {
+                Label("Accessibility", systemImage: "lock.shield")
+            }
+
             Spacer()
 
             Button {

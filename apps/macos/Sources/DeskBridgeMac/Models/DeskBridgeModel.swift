@@ -116,6 +116,13 @@ final class DeskBridgeModel: ObservableObject {
         lastDiagnostics = output
     }
 
+    func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
     private func launchClient() {
         stopClientProcess()
 
@@ -184,6 +191,7 @@ final class DeskBridgeModel: ObservableObject {
 
         After granting permission in System Settings, click Connect again.
         """
+        openAccessibilitySettings()
         return false
     }
 
