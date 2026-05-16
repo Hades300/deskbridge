@@ -1,7 +1,8 @@
 use crate::input::{EnigoSink, InputSink, LogSink};
 use anyhow::{Context, Result, anyhow};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, EventAck, Hello, Message, Ping, Pong, read_frame, write_frame,
+    DEFAULT_HEARTBEAT_MS, EventAck, Hello, Message, Ping, Pong, REPLACED_SESSION_REASON,
+    read_frame, write_frame,
 };
 use std::{net::SocketAddr, time::Duration};
 use tokio::{net::TcpStream, time};
@@ -23,7 +24,11 @@ pub async fn run(options: ClientOptions) -> Result<()> {
     loop {
         attempt += 1;
         match connect_once(&options).await {
-            Ok(()) => info!("client session ended"),
+            Ok(ClientSessionOutcome::Ended) => info!("client session ended"),
+            Ok(ClientSessionOutcome::Replaced) => {
+                info!("client session was replaced by a newer local session; stopping");
+                break;
+            }
             Err(err) => warn!(attempt, error = %err, "client session failed"),
         }
 
@@ -41,7 +46,13 @@ pub async fn run(options: ClientOptions) -> Result<()> {
     Ok(())
 }
 
-async fn connect_once(options: &ClientOptions) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientSessionOutcome {
+    Ended,
+    Replaced,
+}
+
+async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     info!(server = %options.server, screen = options.name, "connecting");
     let mut stream = TcpStream::connect(options.server)
         .await
@@ -108,13 +119,16 @@ async fn connect_once(options: &ClientOptions) -> Result<()> {
                         write_frame(&mut stream, &Message::Ack(EventAck { seq: packet.seq })).await?;
                         received_events += 1;
                         if options.max_events.is_some_and(|max_events| received_events >= max_events) {
-                            return Ok(());
+                            return Ok(ClientSessionOutcome::Ended);
                         }
                     }
                     Message::Status(status) => {
                         warn!(kind = ?status.kind, message = status.message, "server status");
                     }
                     Message::Goodbye { reason } => {
+                        if reason == REPLACED_SESSION_REASON {
+                            return Ok(ClientSessionOutcome::Replaced);
+                        }
                         return Err(anyhow!("server closed session: {reason}"));
                     }
                     other => debug!(message = ?other, "ignored message"),

@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const DEFAULT_HEARTBEAT_MS: u64 = 2_000;
+pub const REPLACED_SESSION_REASON: &str = "replaced by a newer session for the same screen";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

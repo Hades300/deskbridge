@@ -2,10 +2,15 @@ use crate::capture::CaptureEvent;
 use anyhow::{Context, Result};
 use deskbridge_core::{
     DEFAULT_HEARTBEAT_MS, Edge, FrameError, Hello, InputEvent, InputPacket, InputRouter, Layout,
-    Message, Status, StatusKind, Welcome, read_frame, write_frame,
+    Message, REPLACED_SESSION_REASON, Status, StatusKind, Welcome, read_frame, write_frame,
 };
-use std::{collections::HashSet, net::SocketAddr, time::Duration};
-use tokio::{net::TcpListener, net::TcpStream, time};
+use std::{collections::HashMap, collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
+use tokio::{
+    net::TcpListener,
+    net::TcpStream,
+    sync::{Mutex, mpsc},
+    time,
+};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -20,6 +25,8 @@ pub struct ServerOptions {
     pub layout: Layout,
 }
 
+type SessionRegistry = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<()>>>>;
+
 pub async fn run(options: ServerOptions) -> Result<()> {
     let listener = TcpListener::bind(options.listen)
         .await
@@ -30,6 +37,7 @@ pub async fn run(options: ServerOptions) -> Result<()> {
         .map(|name| name.to_ascii_lowercase())
         .collect::<HashSet<_>>();
     let (capture_tx, _) = crate::capture::channel();
+    let sessions = SessionRegistry::default();
 
     if options.capture {
         start_platform_capture(capture_tx.clone())?;
@@ -42,8 +50,11 @@ pub async fn run(options: ServerOptions) -> Result<()> {
         let options = options.clone();
         let allow = allow.clone();
         let capture_tx = capture_tx.clone();
+        let sessions = sessions.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_client(stream, peer, options, allow, capture_tx).await {
+            if let Err(err) =
+                handle_client(stream, peer, options, allow, capture_tx, sessions).await
+            {
                 warn!(peer = %peer, error = %err, "client ended");
             }
         });
@@ -56,6 +67,7 @@ async fn handle_client(
     options: ServerOptions,
     allow: HashSet<String>,
     capture_tx: crate::capture::CaptureSender,
+    sessions: SessionRegistry,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     let hello = match read_frame(&mut stream).await {
@@ -83,6 +95,18 @@ async fn handle_client(
     };
 
     validate_client(&hello, &allow, &mut stream).await?;
+
+    let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
+    let session_key = hello.screen_name.to_ascii_lowercase();
+    if let Some(previous) = sessions.lock().await.insert(session_key, shutdown_tx) {
+        let _ = previous.send(());
+        warn!(
+            peer = %peer,
+            screen = hello.screen_name,
+            "replaced existing client session for screen"
+        );
+    }
+
     info!(peer = %peer, screen = hello.screen_name, "client accepted");
 
     write_frame(
@@ -129,6 +153,12 @@ async fn handle_client(
                         event,
                     })).await?;
                 }
+            }
+            _ = shutdown_rx.recv() => {
+                let _ = write_frame(&mut stream, &Message::Goodbye {
+                    reason: REPLACED_SESSION_REASON.to_string(),
+                }).await;
+                return Ok(());
             }
             msg = read_frame(&mut stream) => {
                 match msg? {

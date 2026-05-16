@@ -102,12 +102,12 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     public void Shutdown()
     {
-        Stop();
+        Stop(killAllDaemons: true);
     }
 
     private void Start()
     {
-        Stop();
+        Stop(killAllDaemons: true);
         SaveConfig();
 
         var daemonPath = LocateDaemon();
@@ -174,21 +174,40 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     private void Stop()
     {
+        Stop(killAllDaemons: true);
+    }
+
+    private void Stop(bool killAllDaemons)
+    {
+        var cleanupNotes = new List<string>();
+
         if (_serverProcess is { HasExited: false })
         {
             try
             {
+                var pid = _serverProcess.Id;
                 _serverProcess.Kill(entireProcessTree: true);
                 _serverProcess.WaitForExit(2000);
+                cleanupNotes.Add($"Stopped tracked daemon pid {pid}.");
             }
             catch (Exception ex)
             {
-                Diagnostics = ex.ToString();
+                cleanupNotes.Add(ex.ToString());
             }
         }
         _serverProcess = null;
+
+        if (killAllDaemons)
+        {
+            cleanupNotes.AddRange(KillDeskBridgeDaemons());
+        }
+
         StatusText = "Stopped";
         StatusBrush = Brushes.Orange;
+        if (cleanupNotes.Count > 0)
+        {
+            Diagnostics = string.Join("\n", cleanupNotes);
+        }
     }
 
     private void SaveConfig()
@@ -262,6 +281,47 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private static string LocateDaemon()
     {
         return Path.Combine(AppContext.BaseDirectory, "deskbridge.exe");
+    }
+
+    private static IReadOnlyList<string> KillDeskBridgeDaemons()
+    {
+        var notes = new List<string>();
+
+        foreach (var process in Process.GetProcessesByName("deskbridge"))
+        {
+            string? processPath;
+            try
+            {
+                processPath = process.MainModule?.FileName;
+            }
+            catch (Exception ex)
+            {
+                notes.Add($"Skipped deskbridge pid {process.Id}: cannot inspect path ({ex.Message}).");
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(processPath))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (!process.HasExited)
+                {
+                    var pid = process.Id;
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(2000);
+                    notes.Add($"Stopped stale daemon pid {pid}: {processPath}");
+                }
+            }
+            catch (Exception ex)
+            {
+                notes.Add($"Failed to stop deskbridge pid {process.Id}: {ex.Message}");
+            }
+        }
+
+        return notes;
     }
 
     private string ListenPort()
