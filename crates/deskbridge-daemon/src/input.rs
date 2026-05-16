@@ -21,12 +21,19 @@ impl InputSink for LogSink {
 pub struct EnigoSink {
     enigo: enigo::Enigo,
     cursor_pos: Option<(i32, i32)>,
+    pressed_buttons: PressedButtons,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayInfo {
     pub size: Size,
     pub location: Option<(i32, i32)>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PressedButtons {
+    left: bool,
+    right: bool,
 }
 
 impl EnigoSink {
@@ -37,6 +44,7 @@ impl EnigoSink {
         Ok(Self {
             enigo,
             cursor_pos: None,
+            pressed_buttons: PressedButtons::default(),
         })
     }
 
@@ -83,16 +91,29 @@ impl InputSink for EnigoSink {
         macos_declare_user_activity();
 
         match &packet.event {
-            InputEvent::MouseMove { dx, dy } => {
-                move_mouse_rel(&mut self.enigo, &mut self.cursor_pos, *dx, *dy)?
+            InputEvent::MouseMove { dx, dy } => move_mouse_rel(
+                &mut self.enigo,
+                &mut self.cursor_pos,
+                *dx,
+                *dy,
+                self.pressed_buttons.has_primary_drag(),
+            )?,
+            InputEvent::MouseAbs { x, y } => move_mouse_abs(
+                &mut self.enigo,
+                &mut self.cursor_pos,
+                *x,
+                *y,
+                self.pressed_buttons.has_primary_drag(),
+            )?,
+            InputEvent::MouseButton { button, state } => {
+                self.enigo
+                    .button(map_button(*button), map_direction(*state))
+                    .map_err(|err| anyhow!("mouse button failed: {err}"))?;
+                self.pressed_buttons.apply(*button, *state);
+                if !self.pressed_buttons.has_primary_drag() {
+                    self.cursor_pos = current_mouse_location(&mut self.enigo);
+                }
             }
-            InputEvent::MouseAbs { x, y } => {
-                move_mouse_abs(&mut self.enigo, &mut self.cursor_pos, *x, *y)?
-            }
-            InputEvent::MouseButton { button, state } => self
-                .enigo
-                .button(map_button(*button), map_direction(*state))
-                .map_err(|err| anyhow!("mouse button failed: {err}"))?,
             InputEvent::Wheel { dx, dy } => {
                 if *dx != 0 {
                     self.enigo
@@ -121,6 +142,29 @@ impl InputSink for EnigoSink {
         }
 
         Ok(())
+    }
+}
+
+impl PressedButtons {
+    fn apply(&mut self, button: Button, state: KeyState) {
+        let pressed = match state {
+            KeyState::Pressed => Some(true),
+            KeyState::Released => Some(false),
+            KeyState::Clicked => None,
+        };
+        let Some(pressed) = pressed else {
+            return;
+        };
+
+        match button {
+            Button::Left => self.left = pressed,
+            Button::Right => self.right = pressed,
+            Button::Middle | Button::Back | Button::Forward => {}
+        }
+    }
+
+    fn has_primary_drag(&self) -> bool {
+        self.left || self.right
     }
 }
 
@@ -175,10 +219,22 @@ fn move_mouse_rel(
     cursor_pos: &mut Option<(i32, i32)>,
     dx: i32,
     dy: i32,
+    dragging: bool,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        use enigo::Mouse;
+        use enigo::{Coordinate, Mouse};
+
+        if dragging {
+            enigo
+                .move_mouse(dx, dy, Coordinate::Rel)
+                .map_err(|err| anyhow!("mouse drag failed: {err}"))?;
+            let fallback = cursor_pos
+                .as_ref()
+                .map(|(x, y)| (x.saturating_add(dx), y.saturating_add(dy)));
+            *cursor_pos = current_mouse_location(enigo).or(fallback);
+            return Ok(());
+        }
 
         let (x, y) = match *cursor_pos {
             Some(pos) => pos,
@@ -195,6 +251,7 @@ fn move_mouse_rel(
 
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = dragging;
         use enigo::{Coordinate, Mouse};
         let result = enigo
             .move_mouse(dx, dy, Coordinate::Rel)
@@ -214,16 +271,27 @@ fn move_mouse_abs(
     cursor_pos: &mut Option<(i32, i32)>,
     x: i32,
     y: i32,
+    dragging: bool,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        let _ = enigo;
+        use enigo::{Coordinate, Mouse};
+
+        if dragging {
+            enigo
+                .move_mouse(x, y, Coordinate::Abs)
+                .map_err(|err| anyhow!("absolute mouse drag failed: {err}"))?;
+            *cursor_pos = current_mouse_location(enigo).or(Some((x, y)));
+            return Ok(());
+        }
+
         *cursor_pos = Some(macos_warp_mouse(x, y)?);
         Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = dragging;
         use enigo::{Coordinate, Mouse};
         let result = enigo
             .move_mouse(x, y, Coordinate::Abs)
@@ -233,6 +301,11 @@ fn move_mouse_abs(
         }
         result
     }
+}
+
+fn current_mouse_location(enigo: &mut enigo::Enigo) -> Option<(i32, i32)> {
+    use enigo::Mouse;
+    enigo.location().ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -727,6 +800,30 @@ mod tests {
         assert_eq!(map_key("right_shift"), Some(enigo::Key::RShift));
         assert_eq!(map_key("meta"), Some(enigo::Key::Meta));
         assert_eq!(map_key("win"), Some(enigo::Key::Meta));
+    }
+
+    #[test]
+    fn tracks_primary_mouse_buttons_for_drag_events() {
+        let mut buttons = PressedButtons::default();
+        assert!(!buttons.has_primary_drag());
+
+        buttons.apply(Button::Left, KeyState::Pressed);
+        assert!(buttons.has_primary_drag());
+
+        buttons.apply(Button::Left, KeyState::Released);
+        assert!(!buttons.has_primary_drag());
+
+        buttons.apply(Button::Right, KeyState::Pressed);
+        assert!(buttons.has_primary_drag());
+
+        buttons.apply(Button::Middle, KeyState::Pressed);
+        assert!(buttons.has_primary_drag());
+
+        buttons.apply(Button::Right, KeyState::Released);
+        assert!(!buttons.has_primary_drag());
+
+        buttons.apply(Button::Left, KeyState::Clicked);
+        assert!(!buttons.has_primary_drag());
     }
 
     #[cfg(target_os = "macos")]
