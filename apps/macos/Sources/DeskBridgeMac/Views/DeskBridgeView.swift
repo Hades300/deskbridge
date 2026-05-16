@@ -218,10 +218,50 @@ struct DeskBridgeView: View {
                             .onChange(of: model.captureInput) { _, _ in model.save() }
                             .onChange(of: model.debugLogging) { _, _ in model.save() }
                         }
+
+                        GridRow {
+                            settingLabel("Portal", systemImage: "sparkle.magnifyingglass")
+                            portalFeedbackControls
+                        }
                     }
                 }
             }
         }
+    }
+
+    private var portalFeedbackControls: some View {
+        HStack(spacing: 14) {
+            Toggle("Glow feedback", isOn: $model.portalFeedbackEnabled)
+                .toggleStyle(.checkbox)
+
+            ForEach(model.portalFeedbackColors) { choice in
+                portalColorButton(choice)
+            }
+        }
+        .onChange(of: model.portalFeedbackEnabled) { _, _ in model.save() }
+    }
+
+    private func portalColorButton(_ choice: PortalFeedbackColorChoice) -> some View {
+        let selected = model.portalFeedbackColor == choice.id
+
+        return Button {
+            model.portalFeedbackColor = choice.id
+            model.save()
+        } label: {
+            Circle()
+                .fill(portalColor(choice.id))
+                .frame(width: 18, height: 18)
+                .overlay {
+                    Circle()
+                        .stroke(
+                            selected ? Color.primary.opacity(0.9) : DeskBridgeTheme.hairline,
+                            lineWidth: selected ? 2 : 1
+                        )
+                }
+                .shadow(color: portalColor(choice.id).opacity(0.55), radius: 7)
+        }
+        .buttonStyle(.plain)
+        .help(choice.name)
     }
 
     private var layoutEditor: some View {
@@ -466,6 +506,23 @@ struct DeskBridgeView: View {
             .background(DeskBridgeTheme.inputBackground, in: RoundedRectangle(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(DeskBridgeTheme.hairline))
             .textSelection(.enabled)
+    }
+
+    private func portalColor(_ id: String) -> Color {
+        switch id {
+        case "aqua":
+            Color(red: 0.35, green: 0.88, blue: 1.00)
+        case "blue":
+            Color(red: 0.38, green: 0.55, blue: 1.00)
+        case "violet":
+            Color(red: 0.78, green: 0.48, blue: 1.00)
+        case "amber":
+            Color(red: 1.00, green: 0.70, blue: 0.25)
+        case "rose":
+            Color(red: 1.00, green: 0.42, blue: 0.56)
+        default:
+            DeskBridgeTheme.portal
+        }
     }
 
     private func detailLabel(_ text: String) -> some View {

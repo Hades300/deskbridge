@@ -14,7 +14,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use deskbridge_core::{
     ClipboardConfig, DEFAULT_HEARTBEAT_MS, DebugCommand, DeskBridgeConfig, Edge, InputEvent,
-    InputPacket, InputRouter, Layout, Link, Screen, Size, simulate_route,
+    InputPacket, InputRouter, Layout, Link, PortalFeedbackConfig, Screen, Size, simulate_route,
 };
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 use tracing_subscriber::EnvFilter;
@@ -290,6 +290,10 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .map(|cfg| cfg.clipboard.clone())
                 .unwrap_or_else(ClipboardConfig::default);
+            let portal_feedback = config
+                .as_ref()
+                .map(|cfg| cfg.portal_feedback.clone())
+                .unwrap_or_else(PortalFeedbackConfig::default);
             server::run(server::ServerOptions {
                 listen,
                 name,
@@ -301,6 +305,7 @@ async fn main() -> Result<()> {
                 heartbeat_ms,
                 layout,
                 clipboard,
+                portal_feedback,
             })
             .await
         }

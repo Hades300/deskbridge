@@ -35,6 +35,23 @@ enum LayoutPreviewEdge: String {
     }
 }
 
+struct PortalFeedbackColorChoice: Identifiable {
+    let id: String
+    let name: String
+}
+
+struct PortalFlashEvent: Decodable {
+    let seq: UInt64
+    let screen: String
+    let role: String
+    let edge: String
+    let x: Int
+    let y: Int
+    let color: String
+    let durationMs: Int
+    let speedPxPerSec: Int
+}
+
 @MainActor
 final class DeskBridgeModel: ObservableObject {
     @Published var mode: DeskBridgeMode
@@ -50,6 +67,8 @@ final class DeskBridgeModel: ObservableObject {
     @Published var clipboardText: Bool
     @Published var clipboardImage: Bool
     @Published var clipboardFiles: Bool
+    @Published var portalFeedbackEnabled: Bool
+    @Published var portalFeedbackColor: String
     @Published var peerOffsetX: Double
     @Published var peerOffsetY: Double
     @Published var status: String = "Idle"
@@ -61,6 +80,15 @@ final class DeskBridgeModel: ObservableObject {
     let localDisplayHeight: Double
     let peerDisplayWidth: Double = 1920
     let peerDisplayHeight: Double = 1080
+    let portalFeedbackColors = [
+        PortalFeedbackColorChoice(id: "lime", name: "Lime"),
+        PortalFeedbackColorChoice(id: "aqua", name: "Aqua"),
+        PortalFeedbackColorChoice(id: "blue", name: "Blue"),
+        PortalFeedbackColorChoice(id: "violet", name: "Violet"),
+        PortalFeedbackColorChoice(id: "amber", name: "Amber"),
+        PortalFeedbackColorChoice(id: "rose", name: "Rose"),
+    ]
+    var onPortalFlash: ((PortalFlashEvent) -> Void)?
 
     private var process: Process?
     private var monitor: Timer?
@@ -85,6 +113,8 @@ final class DeskBridgeModel: ObservableObject {
         clipboardText = defaults.object(forKey: "clipboardText") as? Bool ?? true
         clipboardImage = defaults.object(forKey: "clipboardImage") as? Bool ?? true
         clipboardFiles = defaults.object(forKey: "clipboardFiles") as? Bool ?? true
+        portalFeedbackEnabled = defaults.object(forKey: "portalFeedbackEnabled") as? Bool ?? true
+        portalFeedbackColor = defaults.string(forKey: "portalFeedbackColor") ?? "lime"
         peerOffsetX = defaults.object(forKey: "peerOffsetX") as? Double ?? -1920
         peerOffsetY = defaults.object(forKey: "peerOffsetY") as? Double ?? 0
         shouldStayConnected = defaults.object(forKey: shouldStayConnectedKey) as? Bool ?? false
@@ -199,6 +229,8 @@ final class DeskBridgeModel: ObservableObject {
         defaults.set(clipboardText, forKey: "clipboardText")
         defaults.set(clipboardImage, forKey: "clipboardImage")
         defaults.set(clipboardFiles, forKey: "clipboardFiles")
+        defaults.set(portalFeedbackEnabled, forKey: "portalFeedbackEnabled")
+        defaults.set(portalFeedbackColor, forKey: "portalFeedbackColor")
         defaults.set(peerOffsetX, forKey: "peerOffsetX")
         defaults.set(peerOffsetY, forKey: "peerOffsetY")
     }
@@ -502,21 +534,45 @@ final class DeskBridgeModel: ObservableObject {
     }
 
     private func consumeLog(_ text: String) {
-        lastLogLine = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = text
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
 
-        if text.localizedCaseInsensitiveContains("connected") {
-            connected = true
-            status = currentConnectedStatus
-        } else if text.localizedCaseInsensitiveContains("server listening") {
-            connected = true
-            status = currentConnectedStatus
-        } else if text.localizedCaseInsensitiveContains("failed") {
-            connected = false
-            status = mode == .client ? "Reconnecting" : "Restarting"
-        } else if text.localizedCaseInsensitiveContains("rejected") {
-            connected = false
-            status = "Rejected"
+        for line in lines {
+            if let event = Self.parsePortalFlash(line) {
+                onPortalFlash?(event)
+                continue
+            }
+
+            lastLogLine = line
+
+            if line.localizedCaseInsensitiveContains("connected") {
+                connected = true
+                status = currentConnectedStatus
+            } else if line.localizedCaseInsensitiveContains("server listening") {
+                connected = true
+                status = currentConnectedStatus
+            } else if line.localizedCaseInsensitiveContains("failed") {
+                connected = false
+                status = mode == .client ? "Reconnecting" : "Restarting"
+            } else if line.localizedCaseInsensitiveContains("rejected") {
+                connected = false
+                status = "Rejected"
+            }
         }
+    }
+
+    private static func parsePortalFlash(_ line: String) -> PortalFlashEvent? {
+        let prefix = "DESKBRIDGE_PORTAL_FLASH "
+        guard line.hasPrefix(prefix) else { return nil }
+
+        let json = String(line.dropFirst(prefix.count))
+        guard let data = json.data(using: .utf8) else { return nil }
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(PortalFlashEvent.self, from: data)
     }
 
     private func handleTermination(for terminatedProcess: Process) {
@@ -721,6 +777,12 @@ final class DeskBridgeModel: ObservableObject {
                 "files": clipboardFiles,
                 "poll_ms": 750,
                 "max_transfer_bytes": 33_554_432,
+            ],
+            "portal_feedback": [
+                "enabled": mode == .server && portalFeedbackEnabled,
+                "color": portalFeedbackColor,
+                "min_ms": 180,
+                "max_ms": 620,
             ],
         ]
 

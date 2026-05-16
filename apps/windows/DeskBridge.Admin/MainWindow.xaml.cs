@@ -4,11 +4,15 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 
 namespace DeskBridge.Admin;
 
@@ -123,6 +127,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private bool _clipboardText = true;
     private bool _clipboardImage = true;
     private bool _clipboardFiles = true;
+    private bool _portalFeedbackEnabled = true;
+    private string _portalFeedbackColor = "lime";
     private string _serverName = "windows";
     private string _allowedClient = "mac";
     private string _clientServerAddress = "192.168.2.5:24800";
@@ -144,6 +150,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private const double PreviewPadding = 18;
     private const double MinOverlap = 140;
     private const double PortalGlowThickness = 5;
+    private const string PortalFlashLogPrefix = "DESKBRIDGE_PORTAL_FLASH ";
     private const int SM_CXSCREEN = 0;
     private const int SM_CYSCREEN = 1;
     private const int SM_CXVIRTUALSCREEN = 78;
@@ -202,6 +209,12 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     public string ClipboardSummary => ClipboardEnabled
         ? $"Clipboard: {ClipboardFormats()}"
         : "Clipboard off";
+
+    public IReadOnlyList<string> PortalFeedbackColors { get; } = new[] { "lime", "aqua", "blue", "violet", "amber", "rose" };
+
+    public string PortalFeedbackSummary => PortalFeedbackEnabled
+        ? $"Portal glow: {PortalFeedbackColor}"
+        : "Portal glow off";
 
     public string LocalDisplaySummary => $"{LocalNameLabel} - {Math.Round(LocalWidth)}x{Math.Round(LocalHeight)}";
 
@@ -275,6 +288,30 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (SetField(ref _clipboardFiles, value))
             {
                 OnPropertyChanged(nameof(ClipboardSummary));
+            }
+        }
+    }
+
+    public bool PortalFeedbackEnabled
+    {
+        get => _portalFeedbackEnabled;
+        set
+        {
+            if (SetField(ref _portalFeedbackEnabled, value))
+            {
+                OnPropertyChanged(nameof(PortalFeedbackSummary));
+            }
+        }
+    }
+
+    public string PortalFeedbackColor
+    {
+        get => _portalFeedbackColor;
+        set
+        {
+            if (SetField(ref _portalFeedbackColor, value))
+            {
+                OnPropertyChanged(nameof(PortalFeedbackSummary));
             }
         }
     }
@@ -553,6 +590,13 @@ public sealed class MainWindowModel : INotifyPropertyChanged
                 poll_ms = 750,
                 max_transfer_bytes = 33554432,
             },
+            portal_feedback = new
+            {
+                enabled = IsServerMode && PortalFeedbackEnabled,
+                color = PortalFeedbackColor,
+                min_ms = 180,
+                max_ms = 620,
+            },
         };
 
         var directory = Path.GetDirectoryName(ConfigPath);
@@ -585,6 +629,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             var client = root["client"] as JsonObject;
             var input = root["input"] as JsonObject;
             var clipboard = root["clipboard"] as JsonObject;
+            var portalFeedback = root["portal_feedback"] as JsonObject;
             var layout = root["layout"] as JsonObject;
             var screens = layout?["screens"] as JsonArray;
 
@@ -626,6 +671,14 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (ReadBool(clipboard, "files") is { } clipboardFiles)
             {
                 _clipboardFiles = clipboardFiles;
+            }
+            if (ReadBool(portalFeedback, "enabled") is { } portalFeedbackEnabled)
+            {
+                _portalFeedbackEnabled = portalFeedbackEnabled;
+            }
+            if (ReadString(portalFeedback, "color") is { Length: > 0 } portalFeedbackColor)
+            {
+                _portalFeedbackColor = portalFeedbackColor;
             }
             if (screens is not null)
             {
@@ -746,6 +799,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         {
             $"Status: {StatusText}\nMode: {Mode}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nClient server: {ClientServerAddress}\nRoute: {RouteSummary}\nDebug capture log: {DebugLogging}\nReverse scroll: {IsServerMode && ReverseScroll}\n" +
             $"Clipboard: enabled={ClipboardEnabled} text={ClipboardText} image={ClipboardImage} files={ClipboardFiles}\n" +
+            $"Portal feedback: enabled={IsServerMode && PortalFeedbackEnabled} color={PortalFeedbackColor}\n" +
             $"Admin display model: local={Math.Round(LocalWidth)}x{Math.Round(LocalHeight)} peer={Math.Round(PeerWidth)}x{Math.Round(PeerHeight)} offset=({Math.Round(PeerOffsetX)},{Math.Round(PeerOffsetY)}) {PortalSummary()}\n" +
             $"Daemon: {daemon}\nDeskBridge processes:\n{DescribeDeskBridgeProcesses()}",
         };
@@ -1198,9 +1252,37 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         if (string.IsNullOrWhiteSpace(line)) return;
         Application.Current.Dispatcher.Invoke(() =>
         {
+            if (TryParsePortalFlash(line, out var flash))
+            {
+                PortalFlashOverlay.Show(flash);
+                return;
+            }
+
             var next = $"{Diagnostics}\n{line}";
             Diagnostics = next.Length > 20_000 ? next[^20_000..] : next;
         });
+    }
+
+    private static bool TryParsePortalFlash(string line, out PortalFlashEvent flash)
+    {
+        flash = default!;
+        var trimmed = line.Trim();
+        if (!trimmed.StartsWith(PortalFlashLogPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            flash = JsonSerializer.Deserialize<PortalFlashEvent>(
+                trimmed[PortalFlashLogPrefix.Length..],
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+            return flash is not null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string LocateDaemon()
@@ -1355,4 +1437,127 @@ public sealed class RelayCommand(Action execute) : ICommand
 
     public bool CanExecute(object? parameter) => true;
     public void Execute(object? parameter) => execute();
+}
+
+internal sealed class PortalFlashEvent
+{
+    [JsonPropertyName("seq")]
+    public ulong Seq { get; set; }
+
+    [JsonPropertyName("screen")]
+    public string Screen { get; set; } = "";
+
+    [JsonPropertyName("role")]
+    public string Role { get; set; } = "";
+
+    [JsonPropertyName("edge")]
+    public string Edge { get; set; } = "left";
+
+    [JsonPropertyName("x")]
+    public uint X { get; set; }
+
+    [JsonPropertyName("y")]
+    public uint Y { get; set; }
+
+    [JsonPropertyName("color")]
+    public string Color { get; set; } = "lime";
+
+    [JsonPropertyName("duration_ms")]
+    public uint DurationMs { get; set; } = 220;
+
+    [JsonPropertyName("speed_px_per_sec")]
+    public uint SpeedPxPerSec { get; set; }
+}
+
+internal static class PortalFlashOverlay
+{
+    public static void Show(PortalFlashEvent flash)
+    {
+        var frame = OverlayFrame(flash);
+        var color = ColorFor(flash.Color);
+        var brush = new SolidColorBrush(Color.FromArgb(225, color.R, color.G, color.B));
+        var window = new Window
+        {
+            Width = frame.Width,
+            Height = frame.Height,
+            Left = frame.Left,
+            Top = frame.Top,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            AllowsTransparency = true,
+            Background = Brushes.Transparent,
+            Topmost = true,
+            ShowInTaskbar = false,
+            IsHitTestVisible = false,
+            Focusable = false,
+            ShowActivated = false,
+            Content = new Border
+            {
+                Background = brush,
+                CornerRadius = new CornerRadius(4),
+                Effect = new DropShadowEffect
+                {
+                    Color = color,
+                    ShadowDepth = 0,
+                    BlurRadius = 22,
+                    Opacity = 0.95,
+                },
+            },
+        };
+
+        window.Show();
+        var duration = TimeSpan.FromMilliseconds(Math.Clamp((double)flash.DurationMs, 140, 800));
+        var animation = new DoubleAnimation(1, 0, duration)
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+        };
+        animation.Completed += (_, _) => window.Close();
+        window.BeginAnimation(UIElement.OpacityProperty, animation);
+    }
+
+    private static Rect OverlayFrame(PortalFlashEvent flash)
+    {
+        const double thickness = 8;
+        var span = Math.Clamp(110 + flash.SpeedPxPerSec / 14.0, 110, 300);
+        var left = SystemParameters.VirtualScreenLeft;
+        var top = SystemParameters.VirtualScreenTop;
+        var width = SystemParameters.VirtualScreenWidth;
+        var height = SystemParameters.VirtualScreenHeight;
+
+        return flash.Edge switch
+        {
+            "right" => new Rect(
+                left + width - thickness,
+                Clamp(top + flash.Y - span / 2, top, top + height - span),
+                thickness,
+                span),
+            "top" => new Rect(
+                Clamp(left + flash.X - span / 2, left, left + width - span),
+                top,
+                span,
+                thickness),
+            "bottom" => new Rect(
+                Clamp(left + flash.X - span / 2, left, left + width - span),
+                top + height - thickness,
+                span,
+                thickness),
+            _ => new Rect(
+                left,
+                Clamp(top + flash.Y - span / 2, top, top + height - span),
+                thickness,
+                span),
+        };
+    }
+
+    private static double Clamp(double value, double lower, double upper) => Math.Min(Math.Max(value, lower), upper);
+
+    private static Color ColorFor(string id) => id switch
+    {
+        "aqua" => Color.FromRgb(89, 224, 255),
+        "blue" => Color.FromRgb(97, 140, 255),
+        "violet" => Color.FromRgb(199, 122, 255),
+        "amber" => Color.FromRgb(255, 179, 64),
+        "rose" => Color.FromRgb(255, 107, 143),
+        _ => Color.FromRgb(179, 242, 122),
+    };
 }

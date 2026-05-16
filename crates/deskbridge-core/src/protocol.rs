@@ -7,6 +7,7 @@ pub const PROTOCOL_VERSION: u16 = 1;
 pub const CLIPBOARD_PROTOCOL_VERSION: u16 = 1;
 pub const DEFAULT_HEARTBEAT_MS: u64 = 2_000;
 pub const REPLACED_SESSION_REASON: &str = "replaced by a newer session for the same screen";
+pub const PORTAL_FLASH_LOG_PREFIX: &str = "DESKBRIDGE_PORTAL_FLASH ";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +31,7 @@ pub enum Capability {
     Clipboard,
     Diagnostics,
     LayoutV1,
+    PortalFeedback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +67,7 @@ impl Hello {
                 Capability::Clipboard,
                 Capability::Diagnostics,
                 Capability::LayoutV1,
+                Capability::PortalFeedback,
             ],
             screen_size: None,
             app_version: None,
@@ -102,6 +105,7 @@ impl Hello {
                 Capability::Clipboard,
                 Capability::Diagnostics,
                 Capability::LayoutV1,
+                Capability::PortalFeedback,
             ],
             screen_size: None,
             app_version: None,
@@ -219,6 +223,26 @@ pub struct ClipboardPacket {
     pub seq: u64,
     pub sent_at_ms: u128,
     pub content: ClipboardContent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PortalFlashRole {
+    Exit,
+    Entry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortalFlashPacket {
+    pub seq: u64,
+    pub screen: String,
+    pub role: PortalFlashRole,
+    pub edge: Edge,
+    pub x: u32,
+    pub y: u32,
+    pub color: String,
+    pub duration_ms: u32,
+    pub speed_px_per_sec: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -345,6 +369,7 @@ pub enum Message {
     Input(InputPacket),
     Ack(EventAck),
     Clipboard(ClipboardPacket),
+    PortalFlash(PortalFlashPacket),
     DebugRequest(DebugRequest),
     DebugResponse(DebugResponse),
     Status(Status),
@@ -516,6 +541,24 @@ mod tests {
             content: ClipboardContent::Text {
                 text: "hello".to_string(),
             },
+        });
+        let encoded = serde_json::to_string(&packet).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(packet, decoded);
+    }
+
+    #[test]
+    fn portal_flash_round_trips() {
+        let packet = Message::PortalFlash(PortalFlashPacket {
+            seq: 11,
+            screen: "mac".to_string(),
+            role: PortalFlashRole::Entry,
+            edge: Edge::Left,
+            x: 1,
+            y: 540,
+            color: "lime".to_string(),
+            duration_ms: 320,
+            speed_px_per_sec: 1400,
         });
         let encoded = serde_json::to_string(&packet).unwrap();
         let decoded: Message = serde_json::from_str(&encoded).unwrap();

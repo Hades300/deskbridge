@@ -4,6 +4,25 @@ use crate::{Edge, InputEvent, Layout, LayoutError};
 pub struct RoutedInput {
     pub target_screen: String,
     pub event: InputEvent,
+    pub portal: Option<PortalTransition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortalTransition {
+    pub source_screen: String,
+    pub source_edge: Edge,
+    pub source_x: u32,
+    pub source_y: u32,
+    pub target_screen: String,
+    pub target_edge: Edge,
+    pub target_x: u32,
+    pub target_y: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RouteOutcome {
+    pub input: Option<RoutedInput>,
+    pub portal: Option<PortalTransition>,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +38,7 @@ pub struct InputRouter {
 struct RemotePointer {
     screen: String,
     return_edge: Edge,
+    local_edge: Edge,
     x: i32,
     y: i32,
 }
@@ -59,45 +79,182 @@ impl InputRouter {
     }
 
     pub fn observe_local_pointer(&mut self, x: u32, y: u32) -> Option<RoutedInput> {
+        self.observe_local_pointer_outcome(x, y).input
+    }
+
+    pub fn observe_local_pointer_outcome(&mut self, x: u32, y: u32) -> RouteOutcome {
         if self.active_screen != self.local_screen {
-            return None;
+            return RouteOutcome::default();
         }
 
-        let edge = self.edge_for_pointer(x, y)?;
-        let transition = self.layout.transition(&self.local_screen, edge, x, y)?;
+        let Some(edge) = self.edge_for_pointer(x, y) else {
+            return RouteOutcome::default();
+        };
+        let Some(transition) = self.layout.transition(&self.local_screen, edge, x, y) else {
+            return RouteOutcome::default();
+        };
+        let (source_x, source_y) = self.edge_point(&self.local_screen, edge, x as i32, y as i32);
+        let portal = PortalTransition {
+            source_screen: self.local_screen.clone(),
+            source_edge: edge,
+            source_x,
+            source_y,
+            target_screen: transition.target_screen.clone(),
+            target_edge: transition.target_edge,
+            target_x: transition.x,
+            target_y: transition.y,
+        };
         self.active_screen.clone_from(&transition.target_screen);
         self.remote_pointer = Some(RemotePointer {
             screen: transition.target_screen.clone(),
             return_edge: transition.target_edge,
+            local_edge: edge,
             x: transition.x as i32,
             y: transition.y as i32,
         });
 
-        Some(RoutedInput {
-            target_screen: transition.target_screen,
-            event: InputEvent::MouseAbs {
-                x: transition.x as i32,
-                y: transition.y as i32,
-            },
-        })
+        RouteOutcome {
+            input: Some(RoutedInput {
+                target_screen: transition.target_screen,
+                event: InputEvent::MouseAbs {
+                    x: transition.x as i32,
+                    y: transition.y as i32,
+                },
+                portal: Some(portal.clone()),
+            }),
+            portal: Some(portal),
+        }
     }
 
     pub fn route_if_remote_active(&mut self, event: InputEvent) -> Option<RoutedInput> {
+        self.route_if_remote_active_outcome(event).input
+    }
+
+    pub fn route_if_remote_active_outcome(&mut self, event: InputEvent) -> RouteOutcome {
         if self.active_screen == self.local_screen {
-            return None;
+            return RouteOutcome::default();
         }
 
         if self.remote_event_returns_to_local(&event) {
+            let portal = self.return_portal_transition(&event);
             self.release_to_local();
-            return None;
+            return RouteOutcome {
+                input: None,
+                portal,
+            };
         }
 
         self.update_remote_pointer(&event);
 
-        Some(RoutedInput {
-            target_screen: self.active_screen.clone(),
-            event,
+        RouteOutcome {
+            input: Some(RoutedInput {
+                target_screen: self.active_screen.clone(),
+                event,
+                portal: None,
+            }),
+            portal: None,
+        }
+    }
+
+    fn return_portal_transition(&self, event: &InputEvent) -> Option<PortalTransition> {
+        let pointer = self.remote_pointer.as_ref()?;
+        let InputEvent::MouseMove { dx, dy } = event else {
+            return None;
+        };
+
+        let next_x = pointer.x.saturating_add(*dx);
+        let next_y = pointer.y.saturating_add(*dy);
+        let (source_x, source_y) =
+            self.edge_point(&pointer.screen, pointer.return_edge, next_x, next_y);
+        let (target_x, target_y) = self.map_point_between_screens(
+            &pointer.screen,
+            &self.local_screen,
+            pointer.return_edge,
+            pointer.local_edge,
+            source_x,
+            source_y,
+        )?;
+
+        Some(PortalTransition {
+            source_screen: pointer.screen.clone(),
+            source_edge: pointer.return_edge,
+            source_x,
+            source_y,
+            target_screen: self.local_screen.clone(),
+            target_edge: pointer.local_edge,
+            target_x,
+            target_y,
         })
+    }
+
+    fn edge_point(&self, screen_name: &str, edge: Edge, x: i32, y: i32) -> (u32, u32) {
+        let Some((width, height)) = self.screen_size(screen_name) else {
+            return (0, 0);
+        };
+        let max_x = width.saturating_sub(1);
+        let max_y = height.saturating_sub(1);
+        let clamped_x = x.clamp(0, max_x) as u32;
+        let clamped_y = y.clamp(0, max_y) as u32;
+
+        match edge {
+            Edge::Left => (0, clamped_y),
+            Edge::Right => (max_x as u32, clamped_y),
+            Edge::Top => (clamped_x, 0),
+            Edge::Bottom => (clamped_x, max_y as u32),
+        }
+    }
+
+    fn map_point_between_screens(
+        &self,
+        from: &str,
+        to: &str,
+        from_edge: Edge,
+        to_edge: Edge,
+        x: u32,
+        y: u32,
+    ) -> Option<(u32, u32)> {
+        let source = self
+            .layout
+            .screens
+            .iter()
+            .find(|screen| screen.name == from)?;
+        let target = self
+            .layout
+            .screens
+            .iter()
+            .find(|screen| screen.name == to)?;
+
+        if let (Some(source_origin), Some(target_origin)) = (source.origin, target.origin) {
+            return match from_edge {
+                Edge::Left | Edge::Right => {
+                    let global_y = source_origin.y.saturating_add(y as i32);
+                    let target_y = global_y
+                        .saturating_sub(target_origin.y)
+                        .clamp(0, target.size.height.saturating_sub(1) as i32)
+                        as u32;
+                    Some((edge_axis_coordinate(to_edge, target.size.width), target_y))
+                }
+                Edge::Top | Edge::Bottom => {
+                    let global_x = source_origin.x.saturating_add(x as i32);
+                    let target_x = global_x
+                        .saturating_sub(target_origin.x)
+                        .clamp(0, target.size.width.saturating_sub(1) as i32)
+                        as u32;
+                    Some((target_x, edge_axis_coordinate(to_edge, target.size.height)))
+                }
+            };
+        }
+
+        match from_edge {
+            Edge::Left | Edge::Right => Some((
+                edge_axis_coordinate(to_edge, target.size.width),
+                scale_axis(y, source.size.height, target.size.height),
+            )),
+            Edge::Top | Edge::Bottom => Some((
+                scale_axis(x, source.size.width, target.size.width),
+                edge_axis_coordinate(to_edge, target.size.height),
+            )),
+        }
     }
 
     fn remote_event_returns_to_local(&self, event: &InputEvent) -> bool {
@@ -195,6 +352,21 @@ impl InputRouter {
     }
 }
 
+fn edge_axis_coordinate(edge: Edge, size: u32) -> u32 {
+    match edge {
+        Edge::Left | Edge::Top => 0,
+        Edge::Right | Edge::Bottom => size.saturating_sub(1),
+    }
+}
+
+fn scale_axis(value: u32, from_max: u32, to_max: u32) -> u32 {
+    if from_max <= 1 || to_max <= 1 {
+        return 0;
+    }
+    let ratio = value.min(from_max - 1) as f64 / (from_max - 1) as f64;
+    (ratio * (to_max - 1) as f64).round() as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +414,19 @@ mod tests {
         assert_eq!(router.active_screen(), "mac");
         assert_eq!(routed.target_screen, "mac");
         assert_eq!(routed.event, InputEvent::MouseAbs { x: 1, y: 559 });
+        assert_eq!(
+            routed.portal,
+            Some(PortalTransition {
+                source_screen: "windows".to_string(),
+                source_edge: Edge::Right,
+                source_x: 1919,
+                source_y: 540,
+                target_screen: "mac".to_string(),
+                target_edge: Edge::Left,
+                target_x: 1,
+                target_y: 559,
+            })
+        );
     }
 
     #[test]
@@ -284,6 +469,7 @@ mod tests {
             Some(RoutedInput {
                 target_screen: "mac".to_string(),
                 event: InputEvent::MouseMove { dx: 50, dy: 0 },
+                portal: None,
             })
         );
         assert_eq!(
@@ -298,6 +484,34 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn return_to_local_reports_portal_transition() {
+        let mut router = InputRouter::new(layout(), "windows").unwrap();
+        router.observe_local_pointer(1919, 540).unwrap();
+        router
+            .route_if_remote_active(InputEvent::MouseMove { dx: 50, dy: 0 })
+            .unwrap();
+
+        let outcome =
+            router.route_if_remote_active_outcome(InputEvent::MouseMove { dx: -60, dy: 0 });
+
+        assert_eq!(outcome.input, None);
+        assert_eq!(
+            outcome.portal,
+            Some(PortalTransition {
+                source_screen: "mac".to_string(),
+                source_edge: Edge::Left,
+                source_x: 0,
+                source_y: 559,
+                target_screen: "windows".to_string(),
+                target_edge: Edge::Right,
+                target_x: 1919,
+                target_y: 540,
+            })
+        );
+        assert_eq!(router.active_screen(), "windows");
     }
 
     #[test]

@@ -3,7 +3,8 @@ use anyhow::{Context, Result};
 use deskbridge_core::{
     CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
     DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello, InputEvent, InputPacket,
-    InputRouter, Layout, Message, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome,
+    InputRouter, Layout, Message, PORTAL_FLASH_LOG_PREFIX, PortalFeedbackConfig, PortalFlashPacket,
+    PortalFlashRole, PortalTransition, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome,
     read_frame, write_frame,
 };
 use std::{
@@ -40,6 +41,7 @@ pub struct ServerOptions {
     pub heartbeat_ms: u64,
     pub layout: Layout,
     pub clipboard: ClipboardConfig,
+    pub portal_feedback: PortalFeedbackConfig,
 }
 
 type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
@@ -375,6 +377,55 @@ struct ClientSessionRuntime<'a> {
     capture_tx: crate::capture::CaptureSender,
     server_log: ServerDebugLog,
     client_clipboard_supported: bool,
+    client_portal_feedback_supported: bool,
+}
+
+#[derive(Debug, Default)]
+struct RoutedCapture {
+    event: Option<InputEvent>,
+    portal: Option<PortalTransition>,
+}
+
+#[derive(Debug, Default)]
+struct PointerSpeedTracker {
+    last_move_at: Option<Instant>,
+    recent_speed_px_per_sec: u32,
+}
+
+impl PointerSpeedTracker {
+    fn observe(&mut self, event: &CaptureEvent) -> u32 {
+        let (dx, dy) = match event {
+            CaptureEvent::Input(InputEvent::MouseMove { dx, dy })
+            | CaptureEvent::ProbeInput {
+                event: InputEvent::MouseMove { dx, dy },
+                ..
+            } => (*dx, *dy),
+            _ => return self.recent_speed(),
+        };
+
+        let now = Instant::now();
+        let distance = ((dx as f64).hypot(dy as f64)).round();
+        let speed = match self.last_move_at.replace(now) {
+            Some(previous) => {
+                let elapsed = now.duration_since(previous).as_secs_f64().max(0.001);
+                (distance / elapsed).round() as u32
+            }
+            None => (distance * 60.0).round() as u32,
+        };
+        self.recent_speed_px_per_sec = speed;
+        speed
+    }
+
+    fn recent_speed(&self) -> u32 {
+        if self
+            .last_move_at
+            .is_some_and(|at| at.elapsed() <= Duration::from_millis(350))
+        {
+            self.recent_speed_px_per_sec
+        } else {
+            0
+        }
+    }
 }
 
 fn new_server_debug_log() -> ServerDebugLog {
@@ -675,6 +726,7 @@ async fn handle_client(
     write_frame(&mut stream, &welcome).await?;
     let client_clipboard_supported = hello.capabilities.contains(&Capability::Clipboard)
         && hello.clipboard_protocol == Some(CLIPBOARD_PROTOCOL_VERSION);
+    let client_portal_feedback_supported = hello.capabilities.contains(&Capability::PortalFeedback);
 
     let result = run_client_session(
         stream,
@@ -690,6 +742,7 @@ async fn handle_client(
             capture_tx,
             server_log: server_log.clone(),
             client_clipboard_supported,
+            client_portal_feedback_supported,
         },
     )
     .await;
@@ -727,6 +780,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
         capture_tx,
         server_log,
         client_clipboard_supported,
+        client_portal_feedback_supported,
     } = runtime;
     let mut ticker = time::interval(Duration::from_secs(5));
     let (reader, mut writer) = stream.into_split();
@@ -742,6 +796,8 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut capture_probe_seq_index = HashMap::<u64, Uuid>::new();
     let mut perf = ServerPerfMetrics::new();
     let mut last_unrouted_capture_log_ms = 0_u128;
+    let mut pointer_speed = PointerSpeedTracker::default();
+    let mut portal_seq = 0_u64;
     let mut clipboard_options = options.clipboard.clone();
     if !client_clipboard_supported {
         clipboard_options.enabled = false;
@@ -778,7 +834,12 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     };
                     let probe_id = capture_probe_id(&event);
                     let capture_event = capture_event_payload(event);
-                    let routed = route_capture_event(&mut demo_router, capture_event, client_name);
+                    let capture_speed_px_per_sec = pointer_speed.observe(&capture_event);
+                    let routed = route_capture_event_with_portal(
+                        &mut demo_router,
+                        capture_event,
+                        client_name,
+                    );
                     if probe_id.is_none() {
                         let suppress_local_input = demo_router
                             .as_ref()
@@ -790,7 +851,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         && let Some(capture_log_line) = capture_log_line
                     {
                         let now_ms = deskbridge_core::now_ms();
-                        let routed_to_client = routed.is_some();
+                        let routed_to_client = routed.event.is_some();
                         let should_log = routed_to_client
                             || now_ms.saturating_sub(last_unrouted_capture_log_ms) >= 250;
                         if should_log {
@@ -798,6 +859,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                                 last_unrouted_capture_log_ms = now_ms;
                             }
                             let route_log_line = routed
+                                .event
                                 .as_ref()
                                 .map(|event| format!("routed target={client_name} {}", describe_input_event(event)))
                                 .unwrap_or_else(|| "not routed".to_string());
@@ -814,7 +876,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         && let Some(probe) = pending_capture_probes.get_mut(&request_id)
                     {
                         probe.processed_capture_events += 1;
-                        match &routed {
+                        match &routed.event {
                             Some(event) => probe.logs.push(format!(
                                 "capture event {} routed target={} {}",
                                 probe.processed_capture_events,
@@ -829,7 +891,22 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         }
                     }
 
-                    if let Some(event) = routed {
+                    if probe_id.is_none()
+                        && let Some(portal) = routed.portal.as_ref()
+                    {
+                        emit_portal_feedback(
+                            &mut writer,
+                            &mut portal_seq,
+                            portal,
+                            options,
+                            client_name,
+                            capture_speed_px_per_sec,
+                            client_portal_feedback_supported,
+                        )
+                        .await?;
+                    }
+
+                    if let Some(event) = routed.event {
                         seq += 1;
                         let event = transform_routed_input_event(event, runtime_settings.reverse_scroll());
                         write_input_packet(&mut writer, seq, event, &mut perf).await?;
@@ -1087,6 +1164,9 @@ fn server_capabilities(options: &ServerOptions) -> Vec<Capability> {
     if options.clipboard.enabled {
         capabilities.push(Capability::Clipboard);
     }
+    if options.portal_feedback.enabled {
+        capabilities.push(Capability::PortalFeedback);
+    }
     capabilities
 }
 
@@ -1230,6 +1310,79 @@ where
     Ok(())
 }
 
+async fn emit_portal_feedback<W>(
+    writer: &mut W,
+    portal_seq: &mut u64,
+    transition: &PortalTransition,
+    options: &ServerOptions,
+    client_name: &str,
+    speed_px_per_sec: u32,
+    client_supported: bool,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    if !options.portal_feedback.enabled {
+        return Ok(());
+    }
+
+    let duration_ms = portal_duration_ms(&options.portal_feedback, speed_px_per_sec);
+    let color = options.portal_feedback.color.clone();
+    let packets = [
+        PortalFlashPacket {
+            seq: next_portal_seq(portal_seq),
+            screen: transition.source_screen.clone(),
+            role: PortalFlashRole::Exit,
+            edge: transition.source_edge,
+            x: transition.source_x,
+            y: transition.source_y,
+            color: color.clone(),
+            duration_ms,
+            speed_px_per_sec,
+        },
+        PortalFlashPacket {
+            seq: next_portal_seq(portal_seq),
+            screen: transition.target_screen.clone(),
+            role: PortalFlashRole::Entry,
+            edge: transition.target_edge,
+            x: transition.target_x,
+            y: transition.target_y,
+            color,
+            duration_ms,
+            speed_px_per_sec,
+        },
+    ];
+
+    for packet in packets {
+        if packet.screen == options.name {
+            emit_portal_flash_log(&packet);
+        } else if packet.screen == client_name && client_supported {
+            write_frame(writer, &Message::PortalFlash(packet)).await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn next_portal_seq(portal_seq: &mut u64) -> u64 {
+    *portal_seq = portal_seq.saturating_add(1);
+    *portal_seq
+}
+
+fn portal_duration_ms(config: &PortalFeedbackConfig, speed_px_per_sec: u32) -> u32 {
+    let min_ms = config.min_ms.min(config.max_ms);
+    let max_ms = config.max_ms.max(config.min_ms);
+    let span = max_ms.saturating_sub(min_ms);
+    let normalized_speed = speed_px_per_sec.min(3_200) as f64 / 3_200.0;
+    min_ms + (normalized_speed.sqrt() * span as f64).round() as u32
+}
+
+fn emit_portal_flash_log(packet: &PortalFlashPacket) {
+    if let Ok(json) = serde_json::to_string(packet) {
+        println!("{PORTAL_FLASH_LOG_PREFIX}{json}");
+    }
+}
+
 fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -1286,6 +1439,13 @@ async fn build_server_logs_response(
         options.clipboard.files,
         options.clipboard.poll_ms,
         options.clipboard.max_transfer_bytes
+    ));
+    logs.push(format!(
+        "portal_feedback enabled={} color={} min_ms={} max_ms={}",
+        options.portal_feedback.enabled,
+        options.portal_feedback.color,
+        options.portal_feedback.min_ms,
+        options.portal_feedback.max_ms
     ));
     logs.extend(platform_screen_debug_lines());
 
@@ -1648,12 +1808,14 @@ fn build_route_status_logs(
             options.name
         ),
         format!(
-            "listen={} capture={} demo_events={} reverse_scroll={} heartbeat_ms={}",
+            "listen={} capture={} demo_events={} reverse_scroll={} heartbeat_ms={} portal_feedback={} color={}",
             options.listen,
             options.capture,
             options.demo_events,
             runtime_settings.reverse_scroll(),
-            options.heartbeat_ms
+            options.heartbeat_ms,
+            options.portal_feedback.enabled,
+            options.portal_feedback.color
         ),
         format!(
             "active_route_screen={}",
@@ -1907,30 +2069,53 @@ fn route_capture_event(
     event: CaptureEvent,
     client_name: &str,
 ) -> Option<InputEvent> {
-    let routed = match event {
+    route_capture_event_with_portal(router, event, client_name).event
+}
+
+fn route_capture_event_with_portal(
+    router: &mut Option<InputRouter>,
+    event: CaptureEvent,
+    client_name: &str,
+) -> RoutedCapture {
+    let outcome = match event {
         CaptureEvent::LocalPointer { x, y } | CaptureEvent::ProbeLocalPointer { x, y, .. } => {
-            let routed = router.as_mut()?.observe_local_pointer(x, y)?;
-            if let InputEvent::MouseAbs {
-                x: target_x,
-                y: target_y,
-            } = routed.event
+            let Some(router) = router.as_mut() else {
+                return RoutedCapture::default();
+            };
+            let outcome = router.observe_local_pointer_outcome(x, y);
+            if let Some(routed) = outcome.input.as_ref()
+                && let InputEvent::MouseAbs {
+                    x: target_x,
+                    y: target_y,
+                } = &routed.event
             {
                 info!(
                     source_x = x,
                     source_y = y,
                     target = %routed.target_screen,
-                    target_x,
-                    target_y,
+                    target_x = *target_x,
+                    target_y = *target_y,
                     "activated remote screen from local pointer edge"
                 );
             }
-            routed
+            outcome
         }
         CaptureEvent::Input(event) | CaptureEvent::ProbeInput { event, .. } => {
-            router.as_mut()?.route_if_remote_active(event)?
+            let Some(router) = router.as_mut() else {
+                return RoutedCapture::default();
+            };
+            router.route_if_remote_active_outcome(event)
         }
     };
-    (routed.target_screen == client_name).then_some(routed.event)
+
+    let event = outcome
+        .input
+        .and_then(|routed| (routed.target_screen == client_name).then_some(routed.event));
+    let portal = outcome.portal.filter(|portal| {
+        portal.source_screen == client_name || portal.target_screen == client_name
+    });
+
+    RoutedCapture { event, portal }
 }
 
 fn transform_routed_input_event(mut event: InputEvent, reverse_scroll: bool) -> InputEvent {
@@ -2110,6 +2295,7 @@ mod tests {
                 enabled: false,
                 ..ClipboardConfig::default()
             },
+            portal_feedback: PortalFeedbackConfig::default(),
         }
     }
 

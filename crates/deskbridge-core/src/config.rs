@@ -13,6 +13,8 @@ pub struct DeskBridgeConfig {
     pub input: InputConfig,
     #[serde(default)]
     pub clipboard: ClipboardConfig,
+    #[serde(default)]
+    pub portal_feedback: PortalFeedbackConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,8 +71,47 @@ impl Default for ClipboardConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortalFeedbackConfig {
+    #[serde(default = "default_portal_feedback_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_portal_feedback_color")]
+    pub color: String,
+    #[serde(default = "default_portal_feedback_min_ms")]
+    pub min_ms: u32,
+    #[serde(default = "default_portal_feedback_max_ms")]
+    pub max_ms: u32,
+}
+
+impl Default for PortalFeedbackConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            color: default_portal_feedback_color(),
+            min_ms: default_portal_feedback_min_ms(),
+            max_ms: default_portal_feedback_max_ms(),
+        }
+    }
+}
+
 fn default_clipboard_enabled() -> bool {
     true
+}
+
+fn default_portal_feedback_enabled() -> bool {
+    true
+}
+
+fn default_portal_feedback_color() -> String {
+    "lime".to_string()
+}
+
+fn default_portal_feedback_min_ms() -> u32 {
+    180
+}
+
+fn default_portal_feedback_max_ms() -> u32 {
+    620
 }
 
 fn default_clipboard_poll_ms() -> u64 {
@@ -134,6 +175,7 @@ impl Default for DeskBridgeConfig {
             },
             input: InputConfig::default(),
             clipboard: ClipboardConfig::default(),
+            portal_feedback: PortalFeedbackConfig::default(),
         }
     }
 }
