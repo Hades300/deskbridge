@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct DeskBridgeView: View {
@@ -6,36 +7,85 @@ struct DeskBridgeView: View {
     @State private var dragStartScale: Double = 0.08
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            header
-            modePicker
-            connectionForm
-            if model.mode == .server {
-                layoutEditor
+        ZStack {
+            DeskBridgeTheme.windowBackground
+                .ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    header
+                    controlBar
+                    connectionPanel
+                    if model.mode == .server {
+                        layoutEditor
+                    }
+                    statusPanel
+                    diagnosticsPanel
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                .padding(.bottom, 24)
             }
-            controlBar
-            statusPanel
-            diagnosticsPanel
         }
-        .padding(24)
-        .frame(minWidth: 720, idealWidth: 780, minHeight: 720)
+        .frame(minWidth: 860, idealWidth: 920, minHeight: 760)
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Image(systemName: model.connected ? "checkmark.circle.fill" : "bolt.horizontal.circle.fill")
-                .font(.system(size: 26))
-                .foregroundStyle(model.connected ? .green : .orange)
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Image(systemName: "keyboard.macwindow")
+                        .font(.system(size: 20, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(DeskBridgeTheme.accent)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("DeskBridge")
-                    .font(.title2.weight(.semibold))
-                Text(model.status)
-                    .foregroundStyle(.secondary)
+                    Text("DeskBridge")
+                        .font(.system(size: 28, weight: .semibold))
+                        .tracking(-0.2)
+                }
+
+                HStack(spacing: 8) {
+                    statusPill
+                    infoPill(model.mode.rawValue, systemImage: model.mode == .server ? "antenna.radiowaves.left.and.right" : "bolt.horizontal")
+                    infoPill(model.clipboardEnabled ? "Clipboard on" : "Clipboard off", systemImage: "doc.on.clipboard")
+                }
             }
 
-            Spacer()
+            Spacer(minLength: 16)
+
+            modePicker
+                .frame(width: 190)
         }
+    }
+
+    private var statusPill: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(model.connected ? DeskBridgeTheme.success : DeskBridgeTheme.warning)
+                .frame(width: 8, height: 8)
+                .shadow(color: (model.connected ? DeskBridgeTheme.success : DeskBridgeTheme.warning).opacity(0.55), radius: 6)
+
+            Text(model.connected ? "Connected" : model.status)
+                .font(.system(size: 12, weight: .medium))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(DeskBridgeTheme.pillBackground, in: Capsule())
+        .overlay(Capsule().stroke(DeskBridgeTheme.hairline))
+    }
+
+    private func infoPill(_ text: String, systemImage: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .medium))
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(DeskBridgeTheme.pillBackground, in: Capsule())
+        .overlay(Capsule().stroke(DeskBridgeTheme.hairline))
     }
 
     private var modePicker: some View {
@@ -45,147 +95,193 @@ struct DeskBridgeView: View {
             }
         }
         .pickerStyle(.segmented)
-        .onChange(of: model.mode) {
+        .onChange(of: model.mode) { _, _ in
             model.save()
         }
     }
 
-    private var connectionForm: some View {
-        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
-            if model.mode == .client {
-                GridRow {
-                    Label("Server", systemImage: "desktopcomputer")
-                        .foregroundStyle(.secondary)
-                    TextField("192.168.2.5:24800", text: $model.server)
-                        .textFieldStyle(.roundedBorder)
-                }
-            } else {
-                GridRow {
-                    Label("Listen", systemImage: "network")
-                        .foregroundStyle(.secondary)
-                    TextField("0.0.0.0:24800", text: $model.listenAddress)
-                        .textFieldStyle(.roundedBorder)
-                }
+    private var controlBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                model.connect()
+            } label: {
+                Label(model.mode == .server ? "Start" : "Connect", systemImage: "play.fill")
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+            .tint(DeskBridgeTheme.accent)
+
+            Button {
+                model.disconnect()
+            } label: {
+                Label(model.mode == .server ? "Stop" : "Disconnect", systemImage: "stop.fill")
             }
 
-            GridRow {
-                Label("Local", systemImage: model.mode == .server ? "keyboard" : "macwindow")
-                    .foregroundStyle(.secondary)
-                TextField("mac", text: $model.screenName)
-                    .textFieldStyle(.roundedBorder)
+            Spacer(minLength: 14)
+
+            Button {
+                model.openAccessibilitySettings()
+            } label: {
+                Label("Accessibility", systemImage: "lock.shield")
             }
 
-            GridRow {
-                Label("Peer", systemImage: "rectangle.connected.to.line.below")
-                    .foregroundStyle(.secondary)
-                TextField("windows", text: $model.peerScreenName)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            GridRow {
-                Label("Recovery", systemImage: "arrow.clockwise")
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 18) {
-                    Toggle("Auto reconnect", isOn: $model.autoReconnect)
-                        .toggleStyle(.checkbox)
-                    if model.mode == .server {
-                        Toggle("Reverse remote wheel", isOn: $model.reverseScroll)
-                            .toggleStyle(.checkbox)
-                    }
-                }
-                .onChange(of: model.autoReconnect) { model.save() }
-                .onChange(of: model.reverseScroll) { model.applyRuntimeInputSettings() }
-            }
-
-            GridRow {
-                Label("Clipboard", systemImage: "doc.on.clipboard")
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 14) {
-                    Toggle("Sync", isOn: $model.clipboardEnabled)
-                        .toggleStyle(.checkbox)
-                    Toggle("Text", isOn: $model.clipboardText)
-                        .toggleStyle(.checkbox)
-                    Toggle("Image", isOn: $model.clipboardImage)
-                        .toggleStyle(.checkbox)
-                    Toggle("Files", isOn: $model.clipboardFiles)
-                        .toggleStyle(.checkbox)
-                }
-                .onChange(of: model.clipboardEnabled) { model.save() }
-                .onChange(of: model.clipboardText) { model.save() }
-                .onChange(of: model.clipboardImage) { model.save() }
-                .onChange(of: model.clipboardFiles) { model.save() }
+            Button {
+                model.runDiagnostics()
+            } label: {
+                Label("Diagnose", systemImage: "waveform.path.ecg")
             }
 
             if model.mode == .server {
-                GridRow {
-                    Label("Capture", systemImage: "cursorarrow.motionlines")
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 18) {
-                        Toggle("Keyboard and mouse", isOn: $model.captureInput)
-                            .toggleStyle(.checkbox)
-                        Toggle("Route history", isOn: $model.debugLogging)
-                            .toggleStyle(.checkbox)
+                Button {
+                    model.writeDefaultConfig()
+                } label: {
+                    Label("Save Config", systemImage: "square.and.arrow.down")
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var connectionPanel: some View {
+        sectionSurface {
+            VStack(alignment: .leading, spacing: 14) {
+                sectionHeader(
+                    title: "Connection",
+                    subtitle: model.mode == .server ? model.listenAddress : model.normalizedServerAddress,
+                    systemImage: "point.3.connected.trianglepath.dotted"
+                )
+
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 12) {
+                    if model.mode == .client {
+                        GridRow {
+                            settingLabel("Server", systemImage: "desktopcomputer")
+                            styledTextField("192.168.2.5:24800", text: $model.server)
+                        }
+                    } else {
+                        GridRow {
+                            settingLabel("Listen", systemImage: "network")
+                            styledTextField("0.0.0.0:24800", text: $model.listenAddress)
+                        }
                     }
-                    .onChange(of: model.captureInput) { model.save() }
-                    .onChange(of: model.debugLogging) { model.save() }
+
+                    GridRow {
+                        settingLabel("Local", systemImage: model.mode == .server ? "keyboard" : "macwindow")
+                        styledTextField("mac", text: $model.screenName)
+                    }
+
+                    GridRow {
+                        settingLabel("Peer", systemImage: "rectangle.connected.to.line.below")
+                        styledTextField("windows", text: $model.peerScreenName)
+                    }
+
+                    GridRow {
+                        settingLabel("Recovery", systemImage: "arrow.clockwise")
+                        HStack(spacing: 18) {
+                            Toggle("Auto reconnect", isOn: $model.autoReconnect)
+                                .toggleStyle(.checkbox)
+                            if model.mode == .server {
+                                Toggle("Reverse remote wheel", isOn: $model.reverseScroll)
+                                    .toggleStyle(.checkbox)
+                            }
+                        }
+                        .onChange(of: model.autoReconnect) { _, _ in model.save() }
+                        .onChange(of: model.reverseScroll) { _, _ in model.applyRuntimeInputSettings() }
+                    }
+
+                    GridRow {
+                        settingLabel("Clipboard", systemImage: "doc.on.clipboard")
+                        HStack(spacing: 14) {
+                            Toggle("Sync", isOn: $model.clipboardEnabled)
+                                .toggleStyle(.checkbox)
+                            Toggle("Text", isOn: $model.clipboardText)
+                                .toggleStyle(.checkbox)
+                            Toggle("Image", isOn: $model.clipboardImage)
+                                .toggleStyle(.checkbox)
+                            Toggle("Files", isOn: $model.clipboardFiles)
+                                .toggleStyle(.checkbox)
+                        }
+                        .onChange(of: model.clipboardEnabled) { _, _ in model.save() }
+                        .onChange(of: model.clipboardText) { _, _ in model.save() }
+                        .onChange(of: model.clipboardImage) { _, _ in model.save() }
+                        .onChange(of: model.clipboardFiles) { _, _ in model.save() }
+                    }
+
+                    if model.mode == .server {
+                        GridRow {
+                            settingLabel("Capture", systemImage: "cursorarrow.motionlines")
+                            HStack(spacing: 18) {
+                                Toggle("Keyboard and mouse", isOn: $model.captureInput)
+                                    .toggleStyle(.checkbox)
+                                Toggle("Route history", isOn: $model.debugLogging)
+                                    .toggleStyle(.checkbox)
+                            }
+                            .onChange(of: model.captureInput) { _, _ in model.save() }
+                            .onChange(of: model.debugLogging) { _, _ in model.save() }
+                        }
+                    }
                 }
             }
         }
     }
 
     private var layoutEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Layout")
-                    .font(.headline)
-                Text(model.entryDescription)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    model.snapPeerToNearestEdge()
-                } label: {
-                    Label("Snap", systemImage: "rectangle.2.swap")
+        sectionSurface {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center) {
+                    sectionHeader(
+                        title: "Display Layout",
+                        subtitle: model.entryDescription,
+                        systemImage: "rectangle.3.group"
+                    )
+
+                    Spacer()
+
+                    Button {
+                        model.snapPeerToNearestEdge()
+                    } label: {
+                        Label("Snap", systemImage: "rectangle.2.swap")
+                    }
+                    .buttonStyle(.bordered)
                 }
-            }
 
-            GeometryReader { proxy in
-                let metrics = layoutMetrics(for: proxy.size)
+                GeometryReader { proxy in
+                    let metrics = layoutMetrics(for: proxy.size)
 
-                ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(.quaternary.opacity(0.28))
+                    ZStack(alignment: .topLeading) {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(DeskBridgeTheme.canvasBackground)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(DeskBridgeTheme.hairline))
 
-                    gridLines
+                        gridLines
 
-                    screenBox(
-                        title: model.screenName,
-                        subtitle: model.localRoleLabel,
-                        size: metrics.localSize,
-                        glowEdge: model.localGlowEdge,
-                        isLocal: true
-                    )
-                    .position(
-                        x: metrics.localOrigin.x + metrics.localSize.width / 2,
-                        y: metrics.localOrigin.y + metrics.localSize.height / 2
-                    )
+                        screenBox(
+                            title: model.screenName,
+                            subtitle: "\(model.localRoleLabel) - \(Int(model.localDisplayWidth))x\(Int(model.localDisplayHeight))",
+                            size: metrics.localSize,
+                            glowEdge: model.localGlowEdge,
+                            isLocal: true
+                        )
+                        .position(
+                            x: metrics.localOrigin.x + metrics.localSize.width / 2,
+                            y: metrics.localOrigin.y + metrics.localSize.height / 2
+                        )
 
-                    screenBox(
-                        title: model.peerScreenName,
-                        subtitle: model.peerRoleLabel,
-                        size: metrics.peerSize,
-                        glowEdge: model.peerGlowEdge,
-                        isLocal: false
-                    )
-                    .position(
-                        x: metrics.peerOrigin.x + metrics.peerSize.width / 2,
-                        y: metrics.peerOrigin.y + metrics.peerSize.height / 2
-                    )
-                    .gesture(screenDragGesture(scale: metrics.scale))
+                        screenBox(
+                            title: model.peerScreenName,
+                            subtitle: "\(model.peerRoleLabel) - \(Int(model.peerDisplayWidth))x\(Int(model.peerDisplayHeight))",
+                            size: metrics.peerSize,
+                            glowEdge: model.peerGlowEdge,
+                            isLocal: false
+                        )
+                        .position(
+                            x: metrics.peerOrigin.x + metrics.peerSize.width / 2,
+                            y: metrics.peerOrigin.y + metrics.peerSize.height / 2
+                        )
+                        .gesture(screenDragGesture(scale: metrics.scale))
+                    }
                 }
+                .frame(height: 220)
             }
-            .frame(height: 190)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -205,8 +301,9 @@ struct DeskBridgeView: View {
                 path.addLine(to: CGPoint(x: size.width, y: y))
                 y += step
             }
-            context.stroke(path, with: .color(.secondary.opacity(0.12)), lineWidth: 1)
+            context.stroke(path, with: .color(.secondary.opacity(0.10)), lineWidth: 1)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func screenBox(
@@ -216,59 +313,179 @@ struct DeskBridgeView: View {
         glowEdge: LayoutPreviewEdge,
         isLocal: Bool
     ) -> some View {
-        ZStack {
+        let tint = isLocal ? DeskBridgeTheme.localScreen : DeskBridgeTheme.peerScreen
+        return ZStack {
             RoundedRectangle(cornerRadius: 7)
-                .fill(isLocal ? .blue.opacity(0.18) : .purple.opacity(0.16))
+                .fill(tint.opacity(0.16))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7)
-                        .stroke(isLocal ? .blue.opacity(0.55) : .purple.opacity(0.50), lineWidth: 1)
+                        .stroke(tint.opacity(0.58), lineWidth: 1)
                 )
 
-            glowStrip(edge: glowEdge, size: size)
+            glowStrip(edge: glowEdge)
 
-            VStack(spacing: 3) {
+            VStack(spacing: 4) {
                 Text(title)
-                    .font(.headline)
+                    .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
                 Text(subtitle)
-                    .font(.caption)
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .padding(8)
+            .padding(.horizontal, 10)
         }
         .frame(width: size.width, height: size.height)
-        .shadow(color: .green.opacity(0.20), radius: 8)
+        .shadow(color: tint.opacity(0.16), radius: 12, y: 5)
     }
 
     @ViewBuilder
-    private func glowStrip(edge: LayoutPreviewEdge, size: CGSize) -> some View {
-        let color = Color.green.opacity(0.82)
+    private func glowStrip(edge: LayoutPreviewEdge) -> some View {
+        let color = DeskBridgeTheme.portal
         switch edge {
         case .left:
             HStack {
                 Rectangle().fill(color).frame(width: 5)
-                    .shadow(color: color, radius: 8)
+                    .shadow(color: color.opacity(0.95), radius: 10)
                 Spacer()
             }
         case .right:
             HStack {
                 Spacer()
                 Rectangle().fill(color).frame(width: 5)
-                    .shadow(color: color, radius: 8)
+                    .shadow(color: color.opacity(0.95), radius: 10)
             }
         case .top:
             VStack {
                 Rectangle().fill(color).frame(height: 5)
-                    .shadow(color: color, radius: 8)
+                    .shadow(color: color.opacity(0.95), radius: 10)
                 Spacer()
             }
         case .bottom:
             VStack {
                 Spacer()
                 Rectangle().fill(color).frame(height: 5)
-                    .shadow(color: color, radius: 8)
+                    .shadow(color: color.opacity(0.95), radius: 10)
             }
         }
+    }
+
+    private var statusPanel: some View {
+        sectionSurface {
+            VStack(alignment: .leading, spacing: 12) {
+                sectionHeader(title: "Runtime", subtitle: model.status, systemImage: "gauge.with.dots.needle.50percent")
+
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 9) {
+                    GridRow {
+                        detailLabel(model.mode == .server ? "Listen" : "Target")
+                        detailValue(model.mode == .server ? model.listenAddress : model.normalizedServerAddress)
+                    }
+                    GridRow {
+                        detailLabel("Binary")
+                        detailValue(model.binaryPath, lineLimit: 1)
+                    }
+                    GridRow {
+                        detailLabel("Last log")
+                        detailValue(model.lastLogLine.isEmpty ? "No client log yet." : model.lastLogLine, lineLimit: 2)
+                    }
+                }
+            }
+        }
+    }
+
+    private var diagnosticsPanel: some View {
+        sectionSurface {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    sectionHeader(title: "Diagnostics", subtitle: "Local and peer debug output", systemImage: "doc.text.magnifyingglass")
+                    Spacer()
+                    Button {
+                        copyDiagnostics()
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                ScrollView {
+                    Text(model.lastDiagnostics)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(12)
+                }
+                .frame(height: 170)
+                .background(DeskBridgeTheme.codeBackground, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(DeskBridgeTheme.hairline))
+            }
+        }
+    }
+
+    private func sectionSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(DeskBridgeTheme.hairline))
+    }
+
+    private func sectionHeader(title: String, subtitle: String, systemImage: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(DeskBridgeTheme.accent)
+                .frame(width: 24, height: 24)
+                .background(DeskBridgeTheme.iconBackground, in: RoundedRectangle(cornerRadius: 6))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                Text(subtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    private func settingLabel(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(width: 128, alignment: .leading)
+    }
+
+    private func styledTextField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(DeskBridgeTheme.inputBackground, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(DeskBridgeTheme.hairline))
+            .textSelection(.enabled)
+    }
+
+    private func detailLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(width: 82, alignment: .leading)
+    }
+
+    private func detailValue(_ text: String, lineLimit: Int? = nil) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .lineLimit(lineLimit)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+    }
+
+    private func copyDiagnostics() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(model.lastDiagnostics, forType: .string)
     }
 
     private struct LayoutMetrics {
@@ -280,7 +497,7 @@ struct DeskBridgeView: View {
     }
 
     private func layoutMetrics(for size: CGSize) -> LayoutMetrics {
-        let padding = 18.0
+        let padding = 20.0
         let boundsLeft = min(0, model.peerOffsetX)
         let boundsTop = min(0, model.peerOffsetY)
         let boundsRight = max(model.localDisplayWidth, model.peerOffsetX + model.peerDisplayWidth)
@@ -335,96 +552,28 @@ struct DeskBridgeView: View {
     private func clamp(_ value: Double, lower: Double, upper: Double) -> Double {
         min(max(value, lower), upper)
     }
+}
 
-    private var controlBar: some View {
-        HStack(spacing: 10) {
-            Button {
-                model.connect()
-            } label: {
-                Label(model.mode == .server ? "Start" : "Connect", systemImage: "play.fill")
-            }
-            .keyboardShortcut(.defaultAction)
+private enum DeskBridgeTheme {
+    static let accent = Color(red: 0.80, green: 0.95, blue: 0.42)
+    static let success = Color(red: 0.43, green: 0.84, blue: 0.47)
+    static let warning = Color(red: 0.95, green: 0.65, blue: 0.35)
+    static let portal = Color(red: 0.70, green: 0.95, blue: 0.48)
+    static let localScreen = Color(red: 0.50, green: 0.66, blue: 0.90)
+    static let peerScreen = Color(red: 0.86, green: 0.58, blue: 0.72)
 
-            Button {
-                model.disconnect()
-            } label: {
-                Label(model.mode == .server ? "Stop" : "Disconnect", systemImage: "stop.fill")
-            }
-
-            Button {
-                model.runDiagnostics()
-            } label: {
-                Label("Diagnose", systemImage: "stethoscope")
-            }
-
-            Button {
-                model.openAccessibilitySettings()
-            } label: {
-                Label("Accessibility", systemImage: "lock.shield")
-            }
-
-            Spacer()
-
-            if model.mode == .server {
-                Button {
-                    model.writeDefaultConfig()
-                } label: {
-                    Label("Save Config", systemImage: "doc.badge.gearshape")
-                }
-            }
-        }
-        .buttonStyle(.bordered)
-    }
-
-    private var statusPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Status")
-                .font(.headline)
-
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                GridRow {
-                    Text(model.mode == .server ? "Listen" : "Target")
-                        .foregroundStyle(.secondary)
-                    Text(model.mode == .server ? model.listenAddress : model.normalizedServerAddress)
-                        .textSelection(.enabled)
-                }
-
-                GridRow {
-                    Text("Binary")
-                        .foregroundStyle(.secondary)
-                    Text(model.binaryPath)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                }
-
-                GridRow {
-                    Text("Last log")
-                        .foregroundStyle(.secondary)
-                    Text(model.lastLogLine.isEmpty ? "No client log yet." : model.lastLogLine)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                }
-            }
-            .font(.callout)
-        }
-    }
-
-    private var diagnosticsPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Diagnostics")
-                .font(.headline)
-
-            ScrollView {
-                Text(model.lastDiagnostics)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(10)
-            }
-            .frame(height: 150)
-            .background(.quaternary.opacity(0.35))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
+    static let windowBackground = LinearGradient(
+        colors: [
+            Color(nsColor: .windowBackgroundColor),
+            Color(nsColor: .underPageBackgroundColor).opacity(0.92),
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let pillBackground = Color(nsColor: .controlBackgroundColor).opacity(0.66)
+    static let iconBackground = accent.opacity(0.12)
+    static let inputBackground = Color(nsColor: .textBackgroundColor).opacity(0.52)
+    static let canvasBackground = Color(nsColor: .textBackgroundColor).opacity(0.30)
+    static let codeBackground = Color(nsColor: .textBackgroundColor).opacity(0.42)
+    static let hairline = Color.primary.opacity(0.10)
 }

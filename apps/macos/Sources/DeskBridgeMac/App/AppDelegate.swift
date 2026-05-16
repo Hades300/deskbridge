@@ -56,13 +56,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let view = DeskBridgeView(model: model)
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 800, height: 760),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
             window.title = "DeskBridge"
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.isMovableByWindowBackground = true
+            window.isOpaque = true
+            window.backgroundColor = .windowBackgroundColor
+            window.appearance = NSAppearance(named: .darkAqua)
             window.contentView = NSHostingView(rootView: view)
-            window.minSize = NSSize(width: 720, height: 720)
+            window.minSize = NSSize(width: 860, height: 760)
             window.isReleasedWhenClosed = false
             window.tabbingMode = .disallowed
             window.center()

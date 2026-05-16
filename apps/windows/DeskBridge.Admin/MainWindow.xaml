@@ -1,176 +1,244 @@
 <Window x:Class="DeskBridge.Admin.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DeskBridge" Width="920" Height="760"
-        MinWidth="820" MinHeight="680"
-        Background="{DynamicResource {x:Static SystemColors.ControlBrushKey}}">
+        Title="DeskBridge" Width="980" Height="820"
+        MinWidth="900" MinHeight="720"
+        Background="{StaticResource WindowBrush}"
+        Foreground="{StaticResource TextBrush}"
+        FontFamily="Segoe UI Variable Display, Segoe UI"
+        UseLayoutRounding="True">
+  <Window.Resources>
+    <Style x:Key="PanelBorder" TargetType="Border">
+      <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="8"/>
+      <Setter Property="Padding" Value="16"/>
+    </Style>
+
+    <Style x:Key="PillBorder" TargetType="Border">
+      <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="15"/>
+      <Setter Property="Padding" Value="10,5"/>
+    </Style>
+
+    <Style x:Key="MutedLabel" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
+    <Style x:Key="SubtleText" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource SubtleTextBrush}"/>
+      <Setter Property="FontSize" Value="12"/>
+    </Style>
+  </Window.Resources>
+
   <Grid Margin="24">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
 
-    <DockPanel Grid.Row="0" LastChildFill="True" Margin="0,0,0,18">
-      <Ellipse Width="12" Height="12" Fill="{Binding StatusBrush}" Margin="0,0,12,0"/>
-      <StackPanel>
-        <TextBlock Text="{Binding WindowTitle}" FontSize="22" FontWeight="SemiBold"/>
-        <TextBlock Text="{Binding StatusText}" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
+    <DockPanel Grid.Row="0" LastChildFill="True" Margin="0,0,0,14">
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+        <Border Style="{StaticResource PillBorder}" Margin="0,0,10,0">
+          <StackPanel Orientation="Horizontal">
+            <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}" Margin="0,0,8,0" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding StatusText}" FontSize="12" FontWeight="SemiBold"/>
+          </StackPanel>
+        </Border>
+
+        <ComboBox Width="150" SelectedValue="{Binding Mode}" SelectedValuePath="Content">
+          <ComboBoxItem Content="Server"/>
+          <ComboBoxItem Content="Client"/>
+        </ComboBox>
       </StackPanel>
-      <ComboBox DockPanel.Dock="Right" Width="150" SelectedValue="{Binding Mode}" SelectedValuePath="Content">
-        <ComboBoxItem Content="Server"/>
-        <ComboBoxItem Content="Client"/>
-      </ComboBox>
+
+      <StackPanel>
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+          <Border Width="32" Height="32" CornerRadius="8" Background="#22CDEA69" Margin="0,0,10,0">
+            <TextBlock Text="DB" Foreground="{StaticResource AccentBrush}" FontWeight="Bold"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12"/>
+          </Border>
+          <TextBlock Text="{Binding WindowTitle}" FontSize="28" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal">
+          <Border Style="{StaticResource PillBorder}" Margin="0,0,8,0">
+            <TextBlock Text="{Binding Mode}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" FontWeight="SemiBold"/>
+          </Border>
+          <Border Style="{StaticResource PillBorder}" Margin="0,0,8,0">
+            <TextBlock Text="{Binding RouteSummary}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" FontWeight="SemiBold"/>
+          </Border>
+          <Border Style="{StaticResource PillBorder}">
+            <TextBlock Text="{Binding ClipboardSummary}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" FontWeight="SemiBold"/>
+          </Border>
+        </StackPanel>
+      </StackPanel>
     </DockPanel>
 
-    <Grid Grid.Row="1" Margin="0,0,0,18">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*"/>
-        <ColumnDefinition Width="16"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
+    <DockPanel Grid.Row="1" LastChildFill="False" Margin="0,0,0,16">
+      <StackPanel Orientation="Horizontal">
+        <Button Content="{Binding StartButtonText}" Command="{Binding StartCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,10,0"/>
+        <Button Content="{Binding StopButtonText}" Command="{Binding StopCommand}" Margin="0,0,10,0"/>
+      </StackPanel>
 
-      <GroupBox Header="Local">
-        <Grid Margin="12">
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-          </Grid.RowDefinitions>
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="104"/>
-            <ColumnDefinition Width="*"/>
-          </Grid.ColumnDefinitions>
-
-          <TextBlock Text="Listen" VerticalAlignment="Center" Visibility="{Binding ServerSettingsVisibility}"/>
-          <TextBox Grid.Column="1" Text="{Binding ListenAddress, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ServerSettingsVisibility}"/>
-
-          <TextBlock Text="Target" VerticalAlignment="Center" Visibility="{Binding ClientSettingsVisibility}"/>
-          <TextBox Grid.Column="1" Text="{Binding ClientServerAddress, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ClientSettingsVisibility}"/>
-
-          <TextBlock Grid.Row="1" Text="{Binding LocalNameLabel}" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding AllowedClient, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0" Visibility="{Binding ClientSettingsVisibility}"/>
-
-          <TextBlock Grid.Row="2" Text="Config" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ConfigPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0"/>
-
-          <TextBlock Grid.Row="3" Text="Clipboard" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <WrapPanel Grid.Row="3" Grid.Column="1" Margin="0,10,0,0">
-            <CheckBox Content="Sync" IsChecked="{Binding ClipboardEnabled}" Margin="0,0,12,0"/>
-            <CheckBox Content="Text" IsChecked="{Binding ClipboardText}" Margin="0,0,12,0"/>
-            <CheckBox Content="Image" IsChecked="{Binding ClipboardImage}" Margin="0,0,12,0"/>
-            <CheckBox Content="Files" IsChecked="{Binding ClipboardFiles}"/>
-          </WrapPanel>
-
-          <TextBlock Grid.Row="4" Text="Input" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-          <CheckBox Grid.Row="4" Grid.Column="1" Content="Capture keyboard and mouse" IsChecked="{Binding CaptureInput}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-
-          <TextBlock Grid.Row="5" Text="Wheel" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-          <CheckBox Grid.Row="5" Grid.Column="1" Content="Reverse remote wheel" IsChecked="{Binding ReverseScroll}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-
-          <TextBlock Grid.Row="6" Text="Debug" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-          <CheckBox Grid.Row="6" Grid.Column="1" Content="Keep capture route history" IsChecked="{Binding DebugLogging}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-        </Grid>
-      </GroupBox>
-
-      <GroupBox Grid.Column="2" Header="Peer">
-        <Grid Margin="12">
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-          </Grid.RowDefinitions>
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="104"/>
-            <ColumnDefinition Width="*"/>
-          </Grid.ColumnDefinitions>
-
-          <TextBlock Text="{Binding PeerNameLabel}" VerticalAlignment="Center"/>
-          <TextBox Grid.Column="1" Text="{Binding AllowedClient, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ServerSettingsVisibility}"/>
-          <TextBox Grid.Column="1" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ClientSettingsVisibility}"/>
-
-          <TextBlock Grid.Row="1" Text="Layout" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PeerLayoutSummary}" Margin="0,10,0,0"
-                     Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
-
-          <TextBlock Grid.Row="2" Text="Route" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-          <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding RouteSummary}" Margin="0,10,0,0"
-                     Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" Visibility="{Binding ServerSettingsVisibility}"/>
-        </Grid>
-      </GroupBox>
-    </Grid>
-
-    <GroupBox Grid.Row="2" Header="Layout" Margin="0,0,0,18" Visibility="{Binding LayoutVisibility}">
-      <Grid Margin="12">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-
-        <TextBlock Text="{Binding LayoutSummary}"
-                   Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" Margin="0,0,0,8"/>
-
-        <Canvas x:Name="LayoutCanvas" Grid.Row="1" Height="190" Background="#12000000" ClipToBounds="False">
-          <Rectangle Canvas.Left="{Binding LocalGlowLeft}" Canvas.Top="{Binding LocalGlowTop}"
-                     Width="{Binding LocalGlowWidth}" Height="{Binding LocalGlowHeight}" Fill="#8AF59B">
-            <Rectangle.Effect>
-              <DropShadowEffect Color="#56FF7A" ShadowDepth="0" BlurRadius="18" Opacity="0.95"/>
-            </Rectangle.Effect>
-          </Rectangle>
-
-          <Rectangle Canvas.Left="{Binding PeerGlowLeft}" Canvas.Top="{Binding PeerGlowTop}"
-                     Width="{Binding PeerGlowWidth}" Height="{Binding PeerGlowHeight}" Fill="#8AF59B">
-            <Rectangle.Effect>
-              <DropShadowEffect Color="#56FF7A" ShadowDepth="0" BlurRadius="18" Opacity="0.95"/>
-            </Rectangle.Effect>
-          </Rectangle>
-
-          <Border x:Name="LocalScreen"
-                  Canvas.Left="{Binding LocalBoxLeft}" Canvas.Top="{Binding LocalBoxTop}"
-                  Width="{Binding LocalBoxWidth}" Height="{Binding LocalBoxHeight}"
-                  CornerRadius="7" BorderThickness="1" BorderBrush="#668CCBFF" Background="#228CCBFF">
-            <StackPanel VerticalAlignment="Center">
-              <TextBlock Text="{Binding LocalDisplayName}" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-              <TextBlock Text="{Binding LocalNameLabel}" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" HorizontalAlignment="Center"/>
-            </StackPanel>
-          </Border>
-
-          <Border x:Name="PeerScreen"
-                  Canvas.Left="{Binding PeerBoxLeft}" Canvas.Top="{Binding PeerBoxTop}"
-                  Width="{Binding PeerBoxWidth}" Height="{Binding PeerBoxHeight}"
-                  CornerRadius="7" BorderThickness="1" BorderBrush="#66B892FF" Background="#22B892FF"
-                  Cursor="SizeAll"
-                  MouseLeftButtonDown="PeerScreen_MouseLeftButtonDown"
-                  MouseMove="PeerScreen_MouseMove"
-                  MouseLeftButtonUp="PeerScreen_MouseLeftButtonUp">
-            <StackPanel VerticalAlignment="Center">
-              <TextBlock Text="{Binding PeerDisplayName}" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-              <TextBlock Text="{Binding PeerNameLabel}" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" HorizontalAlignment="Center"/>
-            </StackPanel>
-          </Border>
-        </Canvas>
-      </Grid>
-    </GroupBox>
-
-    <GroupBox Grid.Row="3" Header="Diagnostics">
-      <TextBox Text="{Binding Diagnostics, Mode=OneWay}" Margin="12"
-               FontFamily="Consolas" IsReadOnly="True"
-               TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
-    </GroupBox>
-
-    <DockPanel Grid.Row="4" Margin="0,18,0,0" LastChildFill="False">
-      <Button Content="{Binding StartButtonText}" Command="{Binding StartCommand}" Margin="0,0,10,0"/>
-      <Button Content="{Binding StopButtonText}" Command="{Binding StopCommand}" Margin="0,0,10,0"/>
-      <Button Content="Save Config" Command="{Binding SaveConfigCommand}" Margin="0,0,10,0" Visibility="{Binding ServerSettingsVisibility}"/>
-      <Button Content="Run Diagnostics" Command="{Binding DiagnoseCommand}" Margin="0,0,10,0"/>
-      <Button Content="Open Firewall" Command="{Binding FirewallCommand}" Visibility="{Binding ServerSettingsVisibility}"/>
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+        <Button Content="Save Config" Command="{Binding SaveConfigCommand}" Margin="0,0,10,0" Visibility="{Binding ServerSettingsVisibility}"/>
+        <Button Content="Run Diagnostics" Command="{Binding DiagnoseCommand}" Margin="0,0,10,0"/>
+        <Button Content="Open Firewall" Command="{Binding FirewallCommand}" Visibility="{Binding ServerSettingsVisibility}"/>
+      </StackPanel>
     </DockPanel>
+
+    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+      <StackPanel>
+        <Border Style="{StaticResource PanelBorder}" Margin="0,0,0,14">
+          <StackPanel>
+            <DockPanel Margin="0,0,0,14">
+              <TextBlock Text="Connection" FontSize="16" FontWeight="SemiBold"/>
+              <TextBlock DockPanel.Dock="Right"
+                         Text="{Binding PeerLayoutSummary}"
+                         Style="{StaticResource SubtleText}"
+                         VerticalAlignment="Center"/>
+            </DockPanel>
+
+            <Grid>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="128"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="22"/>
+                <ColumnDefinition Width="128"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+
+              <TextBlock Text="Listen" Style="{StaticResource MutedLabel}" Visibility="{Binding ServerSettingsVisibility}"/>
+              <TextBox Grid.Column="1" Text="{Binding ListenAddress, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ServerSettingsVisibility}"/>
+              <TextBlock Text="Target" Style="{StaticResource MutedLabel}" Visibility="{Binding ClientSettingsVisibility}"/>
+              <TextBox Grid.Column="1" Text="{Binding ClientServerAddress, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ClientSettingsVisibility}"/>
+
+              <TextBlock Grid.Column="3" Text="Config" Style="{StaticResource MutedLabel}"/>
+              <TextBox Grid.Column="4" Text="{Binding ConfigPath, UpdateSourceTrigger=PropertyChanged}"/>
+
+              <TextBlock Grid.Row="1" Text="{Binding LocalNameLabel}" Style="{StaticResource MutedLabel}" Margin="0,12,0,0"/>
+              <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,12,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+              <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding AllowedClient, UpdateSourceTrigger=PropertyChanged}" Margin="0,12,0,0" Visibility="{Binding ClientSettingsVisibility}"/>
+
+              <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding PeerNameLabel}" Style="{StaticResource MutedLabel}" Margin="0,12,0,0"/>
+              <TextBox Grid.Row="1" Grid.Column="4" Text="{Binding AllowedClient, UpdateSourceTrigger=PropertyChanged}" Margin="0,12,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+              <TextBox Grid.Row="1" Grid.Column="4" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,12,0,0" Visibility="{Binding ClientSettingsVisibility}"/>
+
+              <TextBlock Grid.Row="2" Text="Clipboard" Style="{StaticResource MutedLabel}" Margin="0,12,0,0"/>
+              <WrapPanel Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,12,0,0">
+                <CheckBox Content="Sync" IsChecked="{Binding ClipboardEnabled}" Margin="0,0,18,0"/>
+                <CheckBox Content="Text" IsChecked="{Binding ClipboardText}" Margin="0,0,18,0"/>
+                <CheckBox Content="Image" IsChecked="{Binding ClipboardImage}" Margin="0,0,18,0"/>
+                <CheckBox Content="Files" IsChecked="{Binding ClipboardFiles}"/>
+              </WrapPanel>
+
+              <TextBlock Grid.Row="3" Text="Input" Style="{StaticResource MutedLabel}" Margin="0,12,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+              <WrapPanel Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,12,0,0" Visibility="{Binding ServerSettingsVisibility}">
+                <CheckBox Content="Capture keyboard and mouse" IsChecked="{Binding CaptureInput}" Margin="0,0,18,0"/>
+                <CheckBox Content="Reverse remote wheel" IsChecked="{Binding ReverseScroll}" Margin="0,0,18,0"/>
+                <CheckBox Content="Keep route history" IsChecked="{Binding DebugLogging}"/>
+              </WrapPanel>
+
+              <TextBlock Grid.Row="4" Text="Route" Style="{StaticResource MutedLabel}" Margin="0,12,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+              <TextBlock Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="4"
+                         Text="{Binding LayoutSummary}"
+                         Foreground="{StaticResource MutedTextBrush}"
+                         TextWrapping="Wrap"
+                         Margin="0,12,0,0"
+                         Visibility="{Binding ServerSettingsVisibility}"/>
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource PanelBorder}" Margin="0,0,0,14" Visibility="{Binding LayoutVisibility}">
+          <StackPanel>
+            <DockPanel Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="Display Layout" FontSize="16" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding LayoutSummary}" Style="{StaticResource SubtleText}" Margin="0,3,0,0"/>
+              </StackPanel>
+            </DockPanel>
+
+            <Border Height="220" Width="820" Background="{StaticResource CanvasBrush}" BorderBrush="{StaticResource BorderBrushSoft}"
+                    BorderThickness="1" CornerRadius="8" ClipToBounds="True" HorizontalAlignment="Left">
+              <Canvas x:Name="LayoutCanvas">
+                <Rectangle Canvas.Left="{Binding LocalGlowLeft}" Canvas.Top="{Binding LocalGlowTop}"
+                           Width="{Binding LocalGlowWidth}" Height="{Binding LocalGlowHeight}" Fill="{StaticResource AccentBrush}">
+                  <Rectangle.Effect>
+                    <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="18" Opacity="0.85"/>
+                  </Rectangle.Effect>
+                </Rectangle>
+
+                <Rectangle Canvas.Left="{Binding PeerGlowLeft}" Canvas.Top="{Binding PeerGlowTop}"
+                           Width="{Binding PeerGlowWidth}" Height="{Binding PeerGlowHeight}" Fill="{StaticResource AccentBrush}">
+                  <Rectangle.Effect>
+                    <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="18" Opacity="0.85"/>
+                  </Rectangle.Effect>
+                </Rectangle>
+
+                <Border x:Name="LocalScreen"
+                        Canvas.Left="{Binding LocalBoxLeft}" Canvas.Top="{Binding LocalBoxTop}"
+                        Width="{Binding LocalBoxWidth}" Height="{Binding LocalBoxHeight}"
+                        CornerRadius="7" BorderThickness="1" BorderBrush="{StaticResource LocalScreenBorderBrush}" Background="{StaticResource LocalScreenBrush}">
+                  <StackPanel VerticalAlignment="Center" Margin="8">
+                    <TextBlock Text="{Binding LocalDisplayName}" FontWeight="SemiBold" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding LocalDisplaySummary}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                  </StackPanel>
+                </Border>
+
+                <Border x:Name="PeerScreen"
+                        Canvas.Left="{Binding PeerBoxLeft}" Canvas.Top="{Binding PeerBoxTop}"
+                        Width="{Binding PeerBoxWidth}" Height="{Binding PeerBoxHeight}"
+                        CornerRadius="7" BorderThickness="1" BorderBrush="{StaticResource PeerScreenBorderBrush}" Background="{StaticResource PeerScreenBrush}"
+                        Cursor="SizeAll"
+                        MouseLeftButtonDown="PeerScreen_MouseLeftButtonDown"
+                        MouseMove="PeerScreen_MouseMove"
+                        MouseLeftButtonUp="PeerScreen_MouseLeftButtonUp">
+                  <StackPanel VerticalAlignment="Center" Margin="8">
+                    <TextBlock Text="{Binding PeerDisplayName}" FontWeight="SemiBold" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding PeerDisplaySummary}" Foreground="{StaticResource MutedTextBrush}" FontSize="12" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                  </StackPanel>
+                </Border>
+              </Canvas>
+            </Border>
+          </StackPanel>
+        </Border>
+
+        <Border Style="{StaticResource PanelBorder}">
+          <StackPanel>
+            <DockPanel Margin="0,0,0,12">
+              <StackPanel>
+                <TextBlock Text="Diagnostics" FontSize="16" FontWeight="SemiBold"/>
+                <TextBlock Text="Local state, peer logs, route probes, and performance counters" Style="{StaticResource SubtleText}" Margin="0,3,0,0"/>
+              </StackPanel>
+            </DockPanel>
+
+            <TextBox Text="{Binding Diagnostics, Mode=OneWay}"
+                     FontFamily="Cascadia Mono, Consolas"
+                     FontSize="12"
+                     IsReadOnly="True"
+                     MinHeight="220"
+                     TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto"/>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
   </Grid>
 </Window>

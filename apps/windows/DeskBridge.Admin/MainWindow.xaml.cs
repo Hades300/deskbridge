@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 
 namespace DeskBridge.Admin;
@@ -21,6 +22,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Loaded += (_, _) => EnableDarkTitleBar();
         var model = new MainWindowModel();
         DataContext = model;
         Closed += (_, _) => model.Shutdown();
@@ -76,14 +78,43 @@ public partial class MainWindow : Window
         Mouse.Capture(null);
         e.Handled = true;
     }
+
+    private void EnableDarkTitleBar()
+    {
+        try
+        {
+            var handle = new WindowInteropHelper(this).Handle;
+            if (handle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var dark = 1;
+            if (DwmSetWindowAttribute(handle, 20, ref dark, Marshal.SizeOf<int>()) != 0)
+            {
+                _ = DwmSetWindowAttribute(handle, 19, ref dark, Marshal.SizeOf<int>());
+            }
+        }
+        catch
+        {
+            // The default title bar is still functional on older Windows builds.
+        }
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int attributeValue, int attributeSize);
 }
 
 public sealed class MainWindowModel : INotifyPropertyChanged
 {
+    private static readonly Brush SuccessBrush = new SolidColorBrush(Color.FromRgb(104, 205, 111));
+    private static readonly Brush WarningBrush = new SolidColorBrush(Color.FromRgb(238, 170, 92));
+    private static readonly Brush ErrorBrush = new SolidColorBrush(Color.FromRgb(235, 102, 91));
+
     private Process? _serverProcess;
     private string _mode = "Server";
     private string _statusText = "Stopped";
-    private Brush _statusBrush = Brushes.Orange;
+    private Brush _statusBrush = WarningBrush;
     private string _diagnostics = "No diagnostics yet.";
     private bool _captureInput = true;
     private bool _debugLogging = true;
@@ -108,8 +139,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private const double DefaultLocalHeight = 1080;
     private const double DefaultPeerWidth = 1728;
     private const double DefaultPeerHeight = 1117;
-    private const double PreviewCanvasWidth = 760;
-    private const double PreviewCanvasHeight = 190;
+    private const double PreviewCanvasWidth = 820;
+    private const double PreviewCanvasHeight = 220;
     private const double PreviewPadding = 18;
     private const double MinOverlap = 140;
     private const double PortalGlowThickness = 5;
@@ -168,6 +199,14 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     public string PeerLayoutSummary => IsServerMode ? "Saved on this server" : "Configured on the server";
 
+    public string ClipboardSummary => ClipboardEnabled
+        ? $"Clipboard: {ClipboardFormats()}"
+        : "Clipboard off";
+
+    public string LocalDisplaySummary => $"{LocalNameLabel} - {Math.Round(LocalWidth)}x{Math.Round(LocalHeight)}";
+
+    public string PeerDisplaySummary => $"{PeerNameLabel} - {Math.Round(PeerWidth)}x{Math.Round(PeerHeight)}";
+
     public bool CaptureInput
     {
         get => _captureInput;
@@ -195,25 +234,49 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     public bool ClipboardEnabled
     {
         get => _clipboardEnabled;
-        set => SetField(ref _clipboardEnabled, value);
+        set
+        {
+            if (SetField(ref _clipboardEnabled, value))
+            {
+                OnPropertyChanged(nameof(ClipboardSummary));
+            }
+        }
     }
 
     public bool ClipboardText
     {
         get => _clipboardText;
-        set => SetField(ref _clipboardText, value);
+        set
+        {
+            if (SetField(ref _clipboardText, value))
+            {
+                OnPropertyChanged(nameof(ClipboardSummary));
+            }
+        }
     }
 
     public bool ClipboardImage
     {
         get => _clipboardImage;
-        set => SetField(ref _clipboardImage, value);
+        set
+        {
+            if (SetField(ref _clipboardImage, value))
+            {
+                OnPropertyChanged(nameof(ClipboardSummary));
+            }
+        }
     }
 
     public bool ClipboardFiles
     {
         get => _clipboardFiles;
-        set => SetField(ref _clipboardFiles, value);
+        set
+        {
+            if (SetField(ref _clipboardFiles, value))
+            {
+                OnPropertyChanged(nameof(ClipboardSummary));
+            }
+        }
     }
 
     public string ServerName
@@ -227,6 +290,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(LayoutSummary));
                 OnPropertyChanged(nameof(LocalDisplayName));
                 OnPropertyChanged(nameof(PeerDisplayName));
+                OnPropertyChanged(nameof(LocalDisplaySummary));
+                OnPropertyChanged(nameof(PeerDisplaySummary));
             }
         }
     }
@@ -242,6 +307,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
                 OnPropertyChanged(nameof(LayoutSummary));
                 OnPropertyChanged(nameof(LocalDisplayName));
                 OnPropertyChanged(nameof(PeerDisplayName));
+                OnPropertyChanged(nameof(LocalDisplaySummary));
+                OnPropertyChanged(nameof(PeerDisplaySummary));
             }
         }
     }
@@ -338,7 +405,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         if (!File.Exists(daemonPath))
         {
             StatusText = "Daemon missing";
-            StatusBrush = Brushes.Red;
+            StatusBrush = ErrorBrush;
             Diagnostics =
                 "Could not find deskbridge.exe next to the admin app.\n" +
                 $"Expected: {daemonPath}\n\n" +
@@ -385,7 +452,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
                     _serverProcess = null;
                 }
                 StatusText = "Stopped";
-                StatusBrush = Brushes.Orange;
+                StatusBrush = WarningBrush;
             });
         };
 
@@ -396,14 +463,14 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             process.BeginErrorReadLine();
             _serverProcess = process;
             StatusText = IsServerMode ? $"Running on {ListenAddress}" : $"Connected to {ClientServerAddress}";
-            StatusBrush = Brushes.Green;
+            StatusBrush = SuccessBrush;
             Diagnostics =
                 $"Started DeskBridge {Mode.ToLowerInvariant()}.\nArgs: {daemonArgs}\nScreen: {(IsServerMode ? ServerName : AllowedClient)}\nPeer: {(IsServerMode ? AllowedClient : ServerName)}\nReverse scroll: {IsServerMode && ReverseScroll}\nDaemon: {daemonPath}";
         }
         catch (Exception ex)
         {
             StatusText = "Start failed";
-            StatusBrush = Brushes.Red;
+            StatusBrush = ErrorBrush;
             Diagnostics = ex.ToString();
         }
     }
@@ -439,7 +506,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         }
 
         StatusText = "Stopped";
-        StatusBrush = Brushes.Orange;
+        StatusBrush = WarningBrush;
         if (cleanupNotes.Count > 0)
         {
             Diagnostics = string.Join("\n", cleanupNotes);
@@ -762,6 +829,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(WindowTitle));
         OnPropertyChanged(nameof(LocalDisplayName));
         OnPropertyChanged(nameof(PeerDisplayName));
+        OnPropertyChanged(nameof(LocalDisplaySummary));
+        OnPropertyChanged(nameof(PeerDisplaySummary));
         OnPropertyChanged(nameof(PeerLayoutSummary));
         OnPropertyChanged(nameof(RouteSummary));
         OnPropertyChanged(nameof(LayoutSummary));
@@ -791,6 +860,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(PeerGlowTop));
         OnPropertyChanged(nameof(PeerGlowWidth));
         OnPropertyChanged(nameof(PeerGlowHeight));
+        OnPropertyChanged(nameof(LocalDisplaySummary));
+        OnPropertyChanged(nameof(PeerDisplaySummary));
     }
 
     private void SetPeerOffsetFields(double x, double y)
@@ -859,6 +930,25 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         }
 
         return $"portal: x {Math.Round(xStart)}-{Math.Round(xEnd)} of {Math.Round(LocalWidth)}";
+    }
+
+    private string ClipboardFormats()
+    {
+        var formats = new List<string>();
+        if (ClipboardText)
+        {
+            formats.Add("text");
+        }
+        if (ClipboardImage)
+        {
+            formats.Add("image");
+        }
+        if (ClipboardFiles)
+        {
+            formats.Add("files");
+        }
+
+        return formats.Count == 0 ? "no formats" : string.Join(", ", formats);
     }
 
     private double OverlapLeft() => Math.Max(0, PeerOffsetX);
