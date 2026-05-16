@@ -9,6 +9,8 @@ pub struct DeskBridgeConfig {
     pub client: ClientConfig,
     pub layout: Layout,
     pub reliability: ReliabilityConfig,
+    #[serde(default)]
+    pub input: InputConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,6 +30,12 @@ pub struct ReliabilityConfig {
     pub heartbeat_ms: u64,
     pub reconnect_max_ms: u64,
     pub stale_after_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InputConfig {
+    #[serde(default)]
+    pub reverse_scroll: bool,
 }
 
 #[derive(Debug, Error)]
@@ -59,6 +67,7 @@ impl Default for DeskBridgeConfig {
                             width: 1920,
                             height: 1080,
                         },
+                        origin: None,
                     },
                     Screen {
                         name: "mac".to_string(),
@@ -66,6 +75,7 @@ impl Default for DeskBridgeConfig {
                             width: 1728,
                             height: 1117,
                         },
+                        origin: None,
                     },
                 ],
                 links: vec![Link {
@@ -79,6 +89,7 @@ impl Default for DeskBridgeConfig {
                 reconnect_max_ms: 10_000,
                 stale_after_ms: 6_000,
             },
+            input: InputConfig::default(),
         }
     }
 }

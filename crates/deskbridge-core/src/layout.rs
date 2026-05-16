@@ -45,10 +45,18 @@ pub struct Size {
     pub height: u32,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Screen {
     pub name: String,
     pub size: Size,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Point>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +101,7 @@ impl Layout {
                     width: 1920,
                     height: 1080,
                 },
+                origin: None,
             }],
             links: Vec::new(),
         }
@@ -146,6 +155,16 @@ impl Layout {
             .find(|link| link.from == from && link.edge == edge)?;
         let target = screen_by_name.get(link.to.as_str())?;
 
+        if source.origin.is_some() && target.origin.is_some() {
+            let transition = positioned_transition(source, target, edge, x, y)?;
+            return Some(Transition {
+                target_screen: link.to.clone(),
+                target_edge: edge.opposite(),
+                x: transition.0,
+                y: transition.1,
+            });
+        }
+
         let (mapped_x, mapped_y) = match edge {
             Edge::Left => (
                 target.size.width.saturating_sub(2),
@@ -164,6 +183,84 @@ impl Layout {
             target_edge: edge.opposite(),
             x: mapped_x,
             y: mapped_y,
+        })
+    }
+}
+
+fn positioned_transition(
+    source: &Screen,
+    target: &Screen,
+    edge: Edge,
+    x: u32,
+    y: u32,
+) -> Option<(u32, u32)> {
+    let source_rect = ScreenRect::from_screen(source)?;
+    let target_rect = ScreenRect::from_screen(target)?;
+
+    match edge {
+        Edge::Left | Edge::Right => {
+            let overlap_start = source_rect.top.max(target_rect.top);
+            let overlap_end = source_rect.bottom.min(target_rect.bottom);
+            if overlap_start > overlap_end {
+                return None;
+            }
+
+            let global_y = source_rect.top + y.min(source.size.height.saturating_sub(1)) as i32;
+            if global_y < overlap_start || global_y > overlap_end {
+                return None;
+            }
+
+            let target_y = (global_y - target_rect.top)
+                .clamp(0, target.size.height.saturating_sub(1) as i32)
+                as u32;
+            let target_x = match edge {
+                Edge::Left => target.size.width.saturating_sub(2),
+                Edge::Right => 1,
+                Edge::Top | Edge::Bottom => unreachable!(),
+            };
+            Some((target_x, target_y))
+        }
+        Edge::Top | Edge::Bottom => {
+            let overlap_start = source_rect.left.max(target_rect.left);
+            let overlap_end = source_rect.right.min(target_rect.right);
+            if overlap_start > overlap_end {
+                return None;
+            }
+
+            let global_x = source_rect.left + x.min(source.size.width.saturating_sub(1)) as i32;
+            if global_x < overlap_start || global_x > overlap_end {
+                return None;
+            }
+
+            let target_x = (global_x - target_rect.left)
+                .clamp(0, target.size.width.saturating_sub(1) as i32)
+                as u32;
+            let target_y = match edge {
+                Edge::Top => target.size.height.saturating_sub(2),
+                Edge::Bottom => 1,
+                Edge::Left | Edge::Right => unreachable!(),
+            };
+            Some((target_x, target_y))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScreenRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl ScreenRect {
+    fn from_screen(screen: &Screen) -> Option<Self> {
+        let origin = screen.origin?;
+        Some(Self {
+            left: origin.x,
+            top: origin.y,
+            right: origin.x + screen.size.width.saturating_sub(1) as i32,
+            bottom: origin.y + screen.size.height.saturating_sub(1) as i32,
         })
     }
 }
@@ -189,6 +286,7 @@ mod tests {
                         width: 1920,
                         height: 1080,
                     },
+                    origin: None,
                 },
                 Screen {
                     name: "mac".to_string(),
@@ -196,6 +294,7 @@ mod tests {
                         width: 1728,
                         height: 1117,
                     },
+                    origin: None,
                 },
             ],
             links: vec![Link {
@@ -230,5 +329,46 @@ mod tests {
         assert_eq!(transition.target_edge, Edge::Left);
         assert_eq!(transition.x, 1);
         assert!(transition.y > 550 && transition.y < 570);
+    }
+
+    #[test]
+    fn positioned_screens_only_route_through_overlapping_edge_segment() {
+        let layout = Layout {
+            screens: vec![
+                Screen {
+                    name: "windows".to_string(),
+                    size: Size {
+                        width: 1920,
+                        height: 1080,
+                    },
+                    origin: Some(Point { x: 0, y: 0 }),
+                },
+                Screen {
+                    name: "mac".to_string(),
+                    size: Size {
+                        width: 1728,
+                        height: 900,
+                    },
+                    origin: Some(Point { x: 1920, y: 180 }),
+                },
+            ],
+            links: vec![Link {
+                from: "windows".to_string(),
+                edge: Edge::Right,
+                to: "mac".to_string(),
+            }],
+        };
+
+        assert!(
+            layout
+                .transition("windows", Edge::Right, 1919, 100)
+                .is_none()
+        );
+        let transition = layout
+            .transition("windows", Edge::Right, 1919, 540)
+            .unwrap();
+        assert_eq!(transition.target_screen, "mac");
+        assert_eq!(transition.x, 1);
+        assert_eq!(transition.y, 360);
     }
 }

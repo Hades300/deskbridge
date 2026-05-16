@@ -31,6 +31,7 @@ pub struct ServerOptions {
     pub demo_events: bool,
     pub capture: bool,
     pub debug_capture_log: bool,
+    pub reverse_scroll: bool,
     pub heartbeat_ms: u64,
     pub layout: Layout,
 }
@@ -144,11 +145,12 @@ pub async fn run(options: ServerOptions) -> Result<()> {
     push_server_log(
         &server_log,
         format!(
-            "server listening listen={} screen={} capture={} debug_capture_log={} version={} platform={}",
+            "server listening listen={} screen={} capture={} debug_capture_log={} reverse_scroll={} version={} platform={}",
             options.listen,
             options.name,
             options.capture,
             options.debug_capture_log,
+            options.reverse_scroll,
             crate::build_info::version(),
             crate::build_info::platform()
         ),
@@ -467,12 +469,15 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
         tokio::select! {
             _ = ticker.tick(), if options.demo_events => {
                 seq += 1;
-                let event = next_demo_event(
+                let event = transform_routed_input_event(
+                    next_demo_event(
                     &mut demo_router,
                     &options.layout,
                     &options.name,
                     client_name,
                     demo_stage,
+                    ),
+                    options.reverse_scroll,
                 );
                 demo_stage += 1;
                 write_frame(&mut writer, &Message::Input(InputPacket {
@@ -533,6 +538,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
 
                     if let Some(event) = routed {
                         seq += 1;
+                        let event = transform_routed_input_event(event, options.reverse_scroll);
                         write_frame(&mut writer, &Message::Input(InputPacket {
                             seq,
                             event,
@@ -603,6 +609,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         let mut seqs = HashSet::new();
                         for event in events {
                             seq += 1;
+                            let event = transform_routed_input_event(event, options.reverse_scroll);
                             write_frame(&mut writer, &Message::Input(InputPacket {
                                 seq,
                                 event,
@@ -875,6 +882,7 @@ async fn build_server_logs_response(
     logs.push(format!("capture={}", options.capture));
     logs.push(format!("debug_capture_log={}", options.debug_capture_log));
     logs.push(format!("demo_events={}", options.demo_events));
+    logs.push(format!("reverse_scroll={}", options.reverse_scroll));
     logs.push(format!("heartbeat_ms={}", options.heartbeat_ms));
     logs.extend(platform_screen_debug_lines());
 
@@ -1013,7 +1021,8 @@ fn build_route_probe_events(
                 )
             })?,
     };
-    let (x, y) = sample_point_on_edge(&options.layout, &options.name, edge).ok_or_else(|| {
+    let (x, y) = sample_point_for_transition(&options.layout, &options.name, target_screen, edge)
+        .ok_or_else(|| {
         anyhow::anyhow!(
             "layout does not include server screen '{}' for route probe",
             options.name
@@ -1091,7 +1100,8 @@ fn build_capture_probe_events(
                 )
             })?,
     };
-    let (x, y) = sample_point_on_edge(&options.layout, &options.name, edge).ok_or_else(|| {
+    let (x, y) = sample_point_for_transition(&options.layout, &options.name, target_screen, edge)
+        .ok_or_else(|| {
         anyhow::anyhow!(
             "layout does not include server screen '{}' for capture probe",
             options.name
@@ -1197,8 +1207,12 @@ fn build_route_status_logs(
             options.name
         ),
         format!(
-            "listen={} capture={} demo_events={} heartbeat_ms={}",
-            options.listen, options.capture, options.demo_events, options.heartbeat_ms
+            "listen={} capture={} demo_events={} reverse_scroll={} heartbeat_ms={}",
+            options.listen,
+            options.capture,
+            options.demo_events,
+            options.reverse_scroll,
+            options.heartbeat_ms
         ),
         format!(
             "active_route_screen={}",
@@ -1212,8 +1226,14 @@ fn build_route_status_logs(
 
     for screen in &options.layout.screens {
         logs.push(format!(
-            "screen: {} {}x{}",
-            screen.name, screen.size.width, screen.size.height
+            "screen: {} {}x{} origin={}",
+            screen.name,
+            screen.size.width,
+            screen.size.height,
+            screen
+                .origin
+                .map(|origin| format!("{},{}", origin.x, origin.y))
+                .unwrap_or_else(|| "unset".to_string())
         ));
     }
 
@@ -1228,12 +1248,13 @@ fn build_route_status_logs(
             target_link_count += 1;
         }
 
-        match sample_point_on_edge(&options.layout, &link.from, link.edge).and_then(|(x, y)| {
-            options
-                .layout
-                .transition(&link.from, link.edge, x, y)
-                .map(|transition| (x, y, transition))
-        }) {
+        match sample_point_for_transition(&options.layout, &link.from, &link.to, link.edge)
+            .and_then(|(x, y)| {
+                options
+                    .layout
+                    .transition(&link.from, link.edge, x, y)
+                    .map(|transition| (x, y, transition))
+            }) {
             Some((x, y, transition)) => logs.push(format!(
                 "link: {} {:?} -> {} source=({}, {}) target=({}, {}) return_edge={:?}",
                 link.from,
@@ -1471,6 +1492,14 @@ fn route_capture_event(
     (routed.target_screen == client_name).then_some(routed.event)
 }
 
+fn transform_routed_input_event(mut event: InputEvent, reverse_scroll: bool) -> InputEvent {
+    if reverse_scroll && let InputEvent::Wheel { dx, dy } = &mut event {
+        *dx = dx.saturating_neg();
+        *dy = dy.saturating_neg();
+    }
+    event
+}
+
 fn describe_input_event(event: &InputEvent) -> String {
     match event {
         InputEvent::MouseMove { dx, dy } => format!("MouseMove dx={dx} dy={dy}"),
@@ -1509,7 +1538,66 @@ fn demo_transition_point(
         .links
         .iter()
         .find(|link| link.from == server_name && link.to == client_name)?;
-    sample_point_on_edge(layout, server_name, link.edge)
+    sample_point_for_transition(layout, server_name, client_name, link.edge)
+}
+
+fn sample_point_for_transition(
+    layout: &Layout,
+    from: &str,
+    to: &str,
+    edge: Edge,
+) -> Option<(u32, u32)> {
+    let source = layout.screens.iter().find(|screen| screen.name == from)?;
+    let target = layout.screens.iter().find(|screen| screen.name == to)?;
+    let Some(source_origin) = source.origin else {
+        return sample_point_on_edge(layout, from, edge);
+    };
+    let Some(target_origin) = target.origin else {
+        return sample_point_on_edge(layout, from, edge);
+    };
+
+    match edge {
+        Edge::Left | Edge::Right => {
+            let source_top = source_origin.y;
+            let source_bottom = source_origin.y + source.size.height.saturating_sub(1) as i32;
+            let target_top = target_origin.y;
+            let target_bottom = target_origin.y + target.size.height.saturating_sub(1) as i32;
+            let overlap_top = source_top.max(target_top);
+            let overlap_bottom = source_bottom.min(target_bottom);
+            if overlap_top <= overlap_bottom {
+                let y = ((overlap_top + overlap_bottom) / 2 - source_top)
+                    .clamp(0, source.size.height.saturating_sub(1) as i32)
+                    as u32;
+                let x = match edge {
+                    Edge::Left => 0,
+                    Edge::Right => source.size.width.saturating_sub(1),
+                    Edge::Top | Edge::Bottom => unreachable!(),
+                };
+                return Some((x, y));
+            }
+        }
+        Edge::Top | Edge::Bottom => {
+            let source_left = source_origin.x;
+            let source_right = source_origin.x + source.size.width.saturating_sub(1) as i32;
+            let target_left = target_origin.x;
+            let target_right = target_origin.x + target.size.width.saturating_sub(1) as i32;
+            let overlap_left = source_left.max(target_left);
+            let overlap_right = source_right.min(target_right);
+            if overlap_left <= overlap_right {
+                let x = ((overlap_left + overlap_right) / 2 - source_left)
+                    .clamp(0, source.size.width.saturating_sub(1) as i32)
+                    as u32;
+                let y = match edge {
+                    Edge::Top => 0,
+                    Edge::Bottom => source.size.height.saturating_sub(1),
+                    Edge::Left | Edge::Right => unreachable!(),
+                };
+                return Some((x, y));
+            }
+        }
+    }
+
+    sample_point_on_edge(layout, from, edge)
 }
 
 fn sample_point_on_edge(layout: &Layout, screen_name: &str, edge: Edge) -> Option<(u32, u32)> {
@@ -1547,6 +1635,7 @@ mod tests {
                         width: 1920,
                         height: 1080,
                     },
+                    origin: None,
                 },
                 Screen {
                     name: "mac".to_string(),
@@ -1554,6 +1643,7 @@ mod tests {
                         width: 1728,
                         height: 1117,
                     },
+                    origin: None,
                 },
             ],
             links: vec![Link {
@@ -1572,6 +1662,7 @@ mod tests {
             demo_events: false,
             capture: false,
             debug_capture_log: false,
+            reverse_scroll: false,
             heartbeat_ms: DEFAULT_HEARTBEAT_MS,
             layout: test_layout(),
         }
@@ -2061,7 +2152,7 @@ mod tests {
             response
                 .logs
                 .iter()
-                .any(|line| line == "screen: mac 1512x982")
+                .any(|line| line == "screen: mac 1512x982 origin=unset")
         );
         assert!(response.logs.iter().any(|line| {
             line == "link: windows Right -> mac source=(1919, 540) target=(1, 491) return_edge=Left"

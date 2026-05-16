@@ -19,6 +19,7 @@ pub struct ClientOptions {
     pub name: String,
     pub dry_run: bool,
     pub reconnect: bool,
+    pub reverse_scroll: bool,
     pub reconnect_max_ms: u64,
     pub stale_after_ms: u64,
     pub max_events: Option<u64>,
@@ -145,7 +146,10 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                     Message::Pong(pong) => {
                         debug!(seq = pong.seq, "heartbeat acknowledged");
                     }
-                    Message::Input(packet) => {
+                    Message::Input(mut packet) => {
+                        if options.reverse_scroll {
+                            reverse_scroll_event(&mut packet.event);
+                        }
                         sink.apply(&packet).await?;
                         write_frame(&mut writer, &Message::Ack(EventAck { seq: packet.seq })).await?;
                         received_events += 1;
@@ -171,6 +175,13 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                 }
             }
         }
+    }
+}
+
+fn reverse_scroll_event(event: &mut InputEvent) {
+    if let InputEvent::Wheel { dx, dy } = event {
+        *dx = dx.saturating_neg();
+        *dy = dy.saturating_neg();
     }
 }
 
@@ -431,6 +442,7 @@ mod tests {
                 name: "mac".to_string(),
                 dry_run: true,
                 reconnect: true,
+                reverse_scroll: false,
                 reconnect_max_ms: 500,
                 stale_after_ms: 250,
                 max_events: Some(1),

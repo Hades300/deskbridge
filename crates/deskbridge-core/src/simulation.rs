@@ -110,6 +110,7 @@ mod tests {
                         width: 1920,
                         height: 1080,
                     },
+                    origin: None,
                 },
                 Screen {
                     name: "mac".to_string(),
@@ -117,6 +118,7 @@ mod tests {
                         width: 1728,
                         height: 1117,
                     },
+                    origin: None,
                 },
             ],
             links: vec![Link {

@@ -3,36 +3,96 @@ import ApplicationServices
 import Darwin
 import Foundation
 
+enum DeskBridgeMode: String, CaseIterable, Identifiable {
+    case client = "Client"
+    case server = "Server"
+
+    var id: String { rawValue }
+}
+
+enum LayoutPreviewEdge: String {
+    case left
+    case right
+    case top
+    case bottom
+
+    var opposite: LayoutPreviewEdge {
+        switch self {
+        case .left: return .right
+        case .right: return .left
+        case .top: return .bottom
+        case .bottom: return .top
+        }
+    }
+
+    var configValue: String {
+        switch self {
+        case .left: return "left"
+        case .right: return "right"
+        case .top: return "top"
+        case .bottom: return "bottom"
+        }
+    }
+}
+
 @MainActor
 final class DeskBridgeModel: ObservableObject {
+    @Published var mode: DeskBridgeMode
     @Published var server: String
+    @Published var listenAddress: String
     @Published var screenName: String
+    @Published var peerScreenName: String
     @Published var autoReconnect: Bool
+    @Published var captureInput: Bool
+    @Published var debugLogging: Bool
+    @Published var reverseScroll: Bool
+    @Published var peerOffsetX: Double
+    @Published var peerOffsetY: Double
     @Published var status: String = "Idle"
     @Published var connected: Bool = false
     @Published var lastDiagnostics: String = "No diagnostics yet."
     @Published var lastLogLine: String = ""
 
+    let localDisplayWidth: Double
+    let localDisplayHeight: Double
+    let peerDisplayWidth: Double = 1920
+    let peerDisplayHeight: Double = 1080
+
     private var process: Process?
     private var monitor: Timer?
     private var shouldStayConnected = false
     private var restartScheduled = false
+    private var statusProbeInFlight = false
+    private var lastStatusProbeAt = Date.distantPast
     private let defaults = UserDefaults.standard
     private let shouldStayConnectedKey = "shouldStayConnected"
 
     init() {
+        mode = DeskBridgeMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .client
         server = defaults.string(forKey: "server") ?? "192.168.2.5:24800"
+        listenAddress = defaults.string(forKey: "listenAddress") ?? "0.0.0.0:24800"
         screenName = defaults.string(forKey: "screenName") ?? "mac"
+        peerScreenName = defaults.string(forKey: "peerScreenName") ?? "windows"
         autoReconnect = defaults.object(forKey: "autoReconnect") as? Bool ?? true
+        captureInput = defaults.object(forKey: "captureInput") as? Bool ?? true
+        debugLogging = defaults.object(forKey: "debugLogging") as? Bool ?? true
+        reverseScroll = defaults.object(forKey: "reverseScroll") as? Bool ?? false
+        peerOffsetX = defaults.object(forKey: "peerOffsetX") as? Double ?? -1920
+        peerOffsetY = defaults.object(forKey: "peerOffsetY") as? Double ?? 0
         shouldStayConnected = defaults.object(forKey: shouldStayConnectedKey) as? Bool ?? false
+
+        let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1728, height: 1117)
+        localDisplayWidth = max(1, screenFrame.width.rounded())
+        localDisplayHeight = max(1, screenFrame.height.rounded())
+
         startMonitor()
 
         if shouldStayConnected {
-            status = "Connecting"
+            status = mode == .client ? "Connecting" : "Starting"
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 guard let self, self.shouldStayConnected else { return }
-                self.launchClient()
+                self.launchForCurrentMode()
             }
         }
     }
@@ -81,17 +141,61 @@ final class DeskBridgeModel: ObservableObject {
         return "/usr/local/bin/deskbridge"
     }
 
+    var localRoleLabel: String {
+        mode == .server ? "Server" : "Client"
+    }
+
+    var peerRoleLabel: String {
+        mode == .server ? "Client" : "Server"
+    }
+
+    var localToPeerEdge: LayoutPreviewEdge {
+        edge(
+            fromOriginX: 0,
+            fromOriginY: 0,
+            fromWidth: localDisplayWidth,
+            fromHeight: localDisplayHeight,
+            toOriginX: peerOffsetX,
+            toOriginY: peerOffsetY,
+            toWidth: peerDisplayWidth,
+            toHeight: peerDisplayHeight
+        )
+    }
+
+    var localGlowEdge: LayoutPreviewEdge {
+        mode == .server ? localToPeerEdge : localToPeerEdge
+    }
+
+    var peerGlowEdge: LayoutPreviewEdge {
+        localToPeerEdge.opposite
+    }
+
+    var entryDescription: String {
+        let edgeFromServer = serverLinkEdge()
+        let serverName = mode == .server ? screenName : peerScreenName
+        let clientName = mode == .server ? peerScreenName : screenName
+        return "\(serverName) \(edgeFromServer.rawValue.capitalized) -> \(clientName)"
+    }
+
     func save() {
+        defaults.set(mode.rawValue, forKey: "mode")
         defaults.set(server, forKey: "server")
+        defaults.set(listenAddress, forKey: "listenAddress")
         defaults.set(screenName, forKey: "screenName")
+        defaults.set(peerScreenName, forKey: "peerScreenName")
         defaults.set(autoReconnect, forKey: "autoReconnect")
+        defaults.set(captureInput, forKey: "captureInput")
+        defaults.set(debugLogging, forKey: "debugLogging")
+        defaults.set(reverseScroll, forKey: "reverseScroll")
+        defaults.set(peerOffsetX, forKey: "peerOffsetX")
+        defaults.set(peerOffsetY, forKey: "peerOffsetY")
     }
 
     func connect() {
         save()
         shouldStayConnected = true
         defaults.set(true, forKey: shouldStayConnectedKey)
-        launchClient()
+        launchForCurrentMode()
     }
 
     func disconnect() {
@@ -113,12 +217,31 @@ final class DeskBridgeModel: ObservableObject {
         status = "Idle"
     }
 
+    func snapPeerToNearestEdge() {
+        let localCenterX = localDisplayWidth / 2
+        let localCenterY = localDisplayHeight / 2
+        let peerCenterX = peerOffsetX + peerDisplayWidth / 2
+        let peerCenterY = peerOffsetY + peerDisplayHeight / 2
+        let dx = peerCenterX - localCenterX
+        let dy = peerCenterY - localCenterY
+        let minOverlap = 140.0
+
+        if abs(dx / localDisplayWidth) >= abs(dy / localDisplayHeight) {
+            peerOffsetX = dx >= 0 ? localDisplayWidth : -peerDisplayWidth
+            peerOffsetY = peerOffsetY.clamped(to: (-peerDisplayHeight + minOverlap)...(localDisplayHeight - minOverlap))
+        } else {
+            peerOffsetY = dy >= 0 ? localDisplayHeight : -peerDisplayHeight
+            peerOffsetX = peerOffsetX.clamped(to: (-peerDisplayWidth + minOverlap)...(localDisplayWidth - minOverlap))
+        }
+        save()
+    }
+
     func runDiagnostics() {
         save()
         let binary = binaryPath
-        let server = normalizedServerAddress
-        let name = screenName
-        status = connected ? "Connected" : "Diagnosing"
+        let server = mode == .client ? normalizedServerAddress : localDebugServerAddress
+        let name = mode == .server ? peerScreenName : screenName
+        status = connected ? currentConnectedStatus : "Diagnosing"
 
         Task {
             let output = await Task.detached {
@@ -147,11 +270,13 @@ final class DeskBridgeModel: ObservableObject {
     }
 
     func writeDefaultConfig() {
-        let binary = binaryPath
-        let path = configPath.path
-        createSupportDirectory()
-        let output = runDeskBridgeProcess(binary: binary, arguments: ["init-config", "--path", path])
-        lastDiagnostics = output
+        save()
+        do {
+            try writeGeneratedConfig()
+            lastDiagnostics = "Wrote config:\n\(configPath.path)\n\n\(entryDescription)"
+        } catch {
+            lastDiagnostics = error.localizedDescription
+        }
     }
 
     func openAccessibilitySettings() {
@@ -159,6 +284,23 @@ final class DeskBridgeModel: ObservableObject {
             return
         }
         NSWorkspace.shared.open(url)
+    }
+
+    private var currentConnectedStatus: String {
+        mode == .server ? "Server running" : "Connected"
+    }
+
+    private var localDebugServerAddress: String {
+        "127.0.0.1:\(listenPort(from: listenAddress))"
+    }
+
+    private func launchForCurrentMode() {
+        switch mode {
+        case .client:
+            launchClient()
+        case .server:
+            launchServer()
+        }
     }
 
     private func launchClient() {
@@ -172,16 +314,61 @@ final class DeskBridgeModel: ObservableObject {
             return
         }
 
-        terminateStaleClientProcesses()
+        terminateStaleDaemonProcesses(argumentsContain: " client")
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: binaryPath)
-        process.arguments = [
+        var arguments = [
             "client",
             "--server", normalizedServerAddress,
             "--name", screenName,
             "--reconnect",
         ]
+        if reverseScroll {
+            arguments.append("--reverse-scroll")
+        }
+
+        launchDaemon(arguments: arguments, launchingStatus: "Connecting")
+    }
+
+    private func launchServer() {
+        stopClientProcess()
+
+        guard ensureAccessibilityPermission() else {
+            shouldStayConnected = false
+            restartScheduled = false
+            connected = false
+            status = "Accessibility required"
+            return
+        }
+
+        do {
+            try writeGeneratedConfig()
+        } catch {
+            connected = false
+            status = "Config failed"
+            lastDiagnostics = error.localizedDescription
+            return
+        }
+
+        terminateStaleDaemonProcesses(argumentsContain: " server")
+
+        var arguments = ["server", "--config", configPath.path]
+        if captureInput {
+            arguments.append("--capture")
+        }
+        if debugLogging {
+            arguments.append("--debug-capture-log")
+        }
+        if reverseScroll {
+            arguments.append("--reverse-scroll")
+        }
+
+        launchDaemon(arguments: arguments, launchingStatus: "Starting")
+    }
+
+    private func launchDaemon(arguments: [String], launchingStatus: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binaryPath)
+        process.arguments = arguments
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -204,7 +391,7 @@ final class DeskBridgeModel: ObservableObject {
             try process.run()
             self.process = process
             connected = false
-            status = "Connecting"
+            status = launchingStatus
             markConnectedIfProcessStaysAlive(process)
         } catch {
             connected = false
@@ -268,10 +455,13 @@ final class DeskBridgeModel: ObservableObject {
 
         if text.localizedCaseInsensitiveContains("connected") {
             connected = true
-            status = "Connected"
+            status = currentConnectedStatus
+        } else if text.localizedCaseInsensitiveContains("server listening") {
+            connected = true
+            status = currentConnectedStatus
         } else if text.localizedCaseInsensitiveContains("failed") {
             connected = false
-            status = "Reconnecting"
+            status = mode == .client ? "Reconnecting" : "Restarting"
         } else if text.localizedCaseInsensitiveContains("rejected") {
             connected = false
             status = "Rejected"
@@ -300,20 +490,28 @@ final class DeskBridgeModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             restartScheduled = false
             guard shouldStayConnected, autoReconnect else { return }
-            launchClient()
+            launchForCurrentMode()
         }
     }
 
     private func markConnectedIfProcessStaysAlive(_ launchedProcess: Process) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard process === launchedProcess, launchedProcess.isRunning, status == "Connecting" else {
+            guard process === launchedProcess, launchedProcess.isRunning else {
                 return
             }
-            connected = true
-            status = "Connected"
-            if lastLogLine.isEmpty {
-                lastLogLine = "Client process is running."
+
+            if mode == .server {
+                connected = true
+                status = currentConnectedStatus
+                if lastLogLine.isEmpty {
+                    lastLogLine = "Server process is running."
+                }
+            } else {
+                probeConnectionState(force: true)
+                if status == "Connecting" {
+                    status = "Verifying"
+                }
             }
         }
     }
@@ -333,6 +531,45 @@ final class DeskBridgeModel: ObservableObject {
             connected = false
             status = autoReconnect ? "Restarting" : "Stopped"
             scheduleRestartIfNeeded()
+            return
+        }
+
+        if mode == .client {
+            probeConnectionState(force: false)
+        } else {
+            connected = true
+            status = currentConnectedStatus
+        }
+    }
+
+    private func probeConnectionState(force: Bool) {
+        guard mode == .client, !statusProbeInFlight else { return }
+        if !force && Date().timeIntervalSince(lastStatusProbeAt) < 3 {
+            return
+        }
+        lastStatusProbeAt = Date()
+        statusProbeInFlight = true
+
+        let binary = binaryPath
+        let server = normalizedServerAddress
+        let name = screenName
+        Task {
+            let output = await Task.detached {
+                runDeskBridgeProcess(binary: binary, arguments: ["debug", "--server", server, "--name", name, "peer-info"])
+            }.value
+
+            statusProbeInFlight = false
+            if output.localizedCaseInsensitiveContains("client peer info read") || output.localizedCaseInsensitiveContains("role=client") {
+                connected = true
+                status = currentConnectedStatus
+                lastLogLine = "Connection confirmed by server."
+            } else if shouldStayConnected {
+                connected = false
+                status = "Reconnecting"
+                if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    lastLogLine = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
         }
     }
 
@@ -348,10 +585,10 @@ final class DeskBridgeModel: ObservableObject {
         self.process = nil
     }
 
-    private func terminateStaleClientProcesses() {
+    private func terminateStaleDaemonProcesses(argumentsContain marker: String) {
         let matches = runDeskBridgeProcess(
             binary: "/usr/bin/pgrep",
-            arguments: ["-f", "\(binaryPath) client"]
+            arguments: ["-f", "\(binaryPath)\(marker)"]
         )
 
         let currentPid = ProcessInfo.processInfo.processIdentifier
@@ -367,7 +604,126 @@ final class DeskBridgeModel: ObservableObject {
         }
 
         let pidList = pids.map(String.init).joined(separator: ", ")
-        lastLogLine = "Stopped stale DeskBridge client process: \(pidList)"
+        lastLogLine = "Stopped stale DeskBridge daemon process: \(pidList)"
+    }
+
+    private func writeGeneratedConfig() throws {
+        createSupportDirectory()
+
+        let serverScreenName = mode == .server ? screenName : peerScreenName
+        let clientScreenName = mode == .server ? peerScreenName : screenName
+        let serverOrigin = mode == .server
+            ? ["x": 0, "y": 0]
+            : ["x": Int(peerOffsetX.rounded()), "y": Int(peerOffsetY.rounded())]
+        let clientOrigin = mode == .server
+            ? ["x": Int(peerOffsetX.rounded()), "y": Int(peerOffsetY.rounded())]
+            : ["x": 0, "y": 0]
+        let serverSize = mode == .server
+            ? ["width": Int(localDisplayWidth), "height": Int(localDisplayHeight)]
+            : ["width": Int(peerDisplayWidth), "height": Int(peerDisplayHeight)]
+        let clientSize = mode == .server
+            ? ["width": Int(peerDisplayWidth), "height": Int(peerDisplayHeight)]
+            : ["width": Int(localDisplayWidth), "height": Int(localDisplayHeight)]
+
+        let config: [String: Any] = [
+            "server": [
+                "name": serverScreenName,
+                "listen": listenAddress,
+            ],
+            "client": [
+                "name": clientScreenName,
+                "server_addr": normalizedServerAddress,
+            ],
+            "layout": [
+                "screens": [
+                    [
+                        "name": serverScreenName,
+                        "size": serverSize,
+                        "origin": serverOrigin,
+                    ],
+                    [
+                        "name": clientScreenName,
+                        "size": clientSize,
+                        "origin": clientOrigin,
+                    ],
+                ],
+                "links": [
+                    [
+                        "from": serverScreenName,
+                        "edge": serverLinkEdge().configValue,
+                        "to": clientScreenName,
+                    ],
+                ],
+            ],
+            "reliability": [
+                "heartbeat_ms": 2000,
+                "reconnect_max_ms": 10000,
+                "stale_after_ms": 6000,
+            ],
+            "input": [
+                "reverse_scroll": reverseScroll,
+            ],
+        ]
+
+        let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: configPath, options: .atomic)
+    }
+
+    private func serverLinkEdge() -> LayoutPreviewEdge {
+        if mode == .server {
+            return edge(
+                fromOriginX: 0,
+                fromOriginY: 0,
+                fromWidth: localDisplayWidth,
+                fromHeight: localDisplayHeight,
+                toOriginX: peerOffsetX,
+                toOriginY: peerOffsetY,
+                toWidth: peerDisplayWidth,
+                toHeight: peerDisplayHeight
+            )
+        }
+
+        return edge(
+            fromOriginX: peerOffsetX,
+            fromOriginY: peerOffsetY,
+            fromWidth: peerDisplayWidth,
+            fromHeight: peerDisplayHeight,
+            toOriginX: 0,
+            toOriginY: 0,
+            toWidth: localDisplayWidth,
+            toHeight: localDisplayHeight
+        )
+    }
+
+    private func edge(
+        fromOriginX: Double,
+        fromOriginY: Double,
+        fromWidth: Double,
+        fromHeight: Double,
+        toOriginX: Double,
+        toOriginY: Double,
+        toWidth: Double,
+        toHeight: Double
+    ) -> LayoutPreviewEdge {
+        let fromCenterX = fromOriginX + fromWidth / 2
+        let fromCenterY = fromOriginY + fromHeight / 2
+        let toCenterX = toOriginX + toWidth / 2
+        let toCenterY = toOriginY + toHeight / 2
+        let dx = toCenterX - fromCenterX
+        let dy = toCenterY - fromCenterY
+
+        if abs(dx / max(fromWidth, 1)) >= abs(dy / max(fromHeight, 1)) {
+            return dx >= 0 ? .right : .left
+        }
+        return dy >= 0 ? .bottom : .top
+    }
+
+    private func listenPort(from address: String) -> String {
+        guard let colon = address.lastIndex(of: ":") else {
+            return "24800"
+        }
+        let port = address[address.index(after: colon)...]
+        return port.isEmpty ? "24800" : String(port)
     }
 
     private var supportDirectory: URL {
@@ -377,6 +733,12 @@ final class DeskBridgeModel: ObservableObject {
 
     private func createSupportDirectory() {
         try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
+    }
+}
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
 

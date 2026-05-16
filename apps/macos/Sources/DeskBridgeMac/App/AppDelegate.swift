@@ -55,14 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if window == nil {
             let view = DeskBridgeView(model: model)
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
+                contentRect: NSRect(x: 0, y: 0, width: 800, height: 760),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
             )
             window.title = "DeskBridge"
             window.contentView = NSHostingView(rootView: view)
-            window.minSize = NSSize(width: 560, height: 500)
+            window.minSize = NSSize(width: 720, height: 720)
             window.isReleasedWhenClosed = false
             window.tabbingMode = .disallowed
             window.center()

@@ -37,6 +37,8 @@ enum Command {
         name: String,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        #[arg(long, default_value_t = false)]
+        reverse_scroll: bool,
         #[arg(long, default_value_t = true)]
         reconnect: bool,
         #[arg(long, default_value_t = false)]
@@ -62,6 +64,8 @@ enum Command {
         capture: bool,
         #[arg(long, default_value_t = false)]
         debug_capture_log: bool,
+        #[arg(long, default_value_t = false)]
+        reverse_scroll: bool,
     },
     /// Diagnose reachability and protocol handshake.
     Diag {
@@ -193,6 +197,7 @@ async fn main() -> Result<()> {
             server,
             name,
             dry_run,
+            reverse_scroll,
             reconnect,
             once,
             max_events,
@@ -217,11 +222,14 @@ async fn main() -> Result<()> {
             let stale_after_ms = stale_after_ms
                 .or_else(|| config.as_ref().map(|cfg| cfg.reliability.stale_after_ms))
                 .unwrap_or(6_000);
+            let reverse_scroll =
+                reverse_scroll || config.as_ref().is_some_and(|cfg| cfg.input.reverse_scroll);
             client::run(client::ClientOptions {
                 server,
                 name,
                 dry_run,
                 reconnect: reconnect && !once,
+                reverse_scroll,
                 reconnect_max_ms,
                 stale_after_ms,
                 max_events,
@@ -236,6 +244,7 @@ async fn main() -> Result<()> {
             demo_events,
             capture,
             debug_capture_log,
+            reverse_scroll,
         } => {
             let config = load_config(config)?;
             let listen = config
@@ -258,6 +267,8 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .map(|cfg| cfg.layout.clone())
                 .unwrap_or_else(|| default_layout(&name, &allow));
+            let reverse_scroll =
+                reverse_scroll || config.as_ref().is_some_and(|cfg| cfg.input.reverse_scroll);
             server::run(server::ServerOptions {
                 listen,
                 name,
@@ -265,6 +276,7 @@ async fn main() -> Result<()> {
                 demo_events,
                 capture,
                 debug_capture_log,
+                reverse_scroll,
                 heartbeat_ms,
                 layout,
             })
@@ -600,6 +612,7 @@ fn default_layout(server_name: &str, clients: &[String]) -> Layout {
             width: 1920,
             height: 1080,
         },
+        origin: None,
     }];
 
     for client in clients {
@@ -609,6 +622,7 @@ fn default_layout(server_name: &str, clients: &[String]) -> Layout {
                 width: 1728,
                 height: 1117,
             },
+            origin: None,
         });
     }
 

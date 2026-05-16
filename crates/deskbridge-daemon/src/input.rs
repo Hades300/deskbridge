@@ -76,6 +76,8 @@ impl InputSink for EnigoSink {
     async fn apply(&mut self, packet: &InputPacket) -> Result<()> {
         use enigo::{Axis, Keyboard, Mouse};
 
+        macos_declare_user_activity();
+
         match &packet.event {
             InputEvent::MouseMove { dx, dy } => move_mouse_rel(&mut self.enigo, *dx, *dy)?,
             InputEvent::MouseAbs { x, y } => move_mouse_abs(&mut self.enigo, *x, *y)?,
@@ -113,6 +115,52 @@ impl InputSink for EnigoSink {
         Ok(())
     }
 }
+
+#[cfg(target_os = "macos")]
+fn macos_declare_user_activity() {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::{CFString, CFStringRef};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const MIN_INTERVAL_MS: u64 = 1_000;
+    const USER_ACTIVE_LOCAL: u32 = 1;
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOPMAssertionDeclareUserActivity(
+            assertion_name: CFStringRef,
+            user_type: u32,
+            assertion_id: *mut u32,
+        ) -> i32;
+    }
+
+    static LAST_DECLARED_MS: AtomicU64 = AtomicU64::new(0);
+
+    let now = deskbridge_core::now_ms().min(u64::MAX as u128) as u64;
+    let last = LAST_DECLARED_MS.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < MIN_INTERVAL_MS {
+        return;
+    }
+    if LAST_DECLARED_MS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let reason = CFString::new("DeskBridge remote input");
+    let mut assertion_id = 0_u32;
+    let _ = unsafe {
+        IOPMAssertionDeclareUserActivity(
+            reason.as_concrete_TypeRef(),
+            USER_ACTIVE_LOCAL,
+            &mut assertion_id,
+        )
+    };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_declare_user_activity() {}
 
 fn move_mouse_rel(enigo: &mut enigo::Enigo, dx: i32, dy: i32) -> Result<()> {
     #[cfg(target_os = "macos")]
