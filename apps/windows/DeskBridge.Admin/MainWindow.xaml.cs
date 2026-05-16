@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -90,24 +91,35 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private string _serverName = "windows";
     private string _allowedClient = "mac";
     private string _clientServerAddress = "192.168.2.5:24800";
-    private double _peerOffsetX = 1920;
+    private readonly double _localWidth;
+    private readonly double _localHeight;
+    private double _peerWidth = DefaultPeerWidth;
+    private double _peerHeight = DefaultPeerHeight;
+    private double _peerOffsetX;
     private double _peerOffsetY;
 
     public const double MinimumPreviewScale = 0.02;
     private const double MaximumPreviewScale = 0.10;
-    private const double LocalWidth = 1920;
-    private const double LocalHeight = 1080;
-    private const double PeerWidth = 1728;
-    private const double PeerHeight = 1117;
+    private const double DefaultLocalWidth = 1920;
+    private const double DefaultLocalHeight = 1080;
+    private const double DefaultPeerWidth = 1728;
+    private const double DefaultPeerHeight = 1117;
     private const double PreviewCanvasWidth = 760;
     private const double PreviewCanvasHeight = 190;
     private const double PreviewPadding = 18;
     private const double MinOverlap = 140;
+    private const double PortalGlowThickness = 5;
+    private const int SM_CXSCREEN = 0;
+    private const int SM_CYSCREEN = 1;
+    private const int SM_CXVIRTUALSCREEN = 78;
+    private const int SM_CYVIRTUALSCREEN = 79;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public MainWindowModel()
     {
+        (_localWidth, _localHeight) = ReadPlatformScreenSize();
+        _peerOffsetX = _localWidth;
         LoadConfig();
     }
 
@@ -234,7 +246,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     public string RouteSummary => $"{ServerName} {ServerLinkEdge().ToUpperInvariant()} -> {AllowedClient}";
 
-    public string LayoutSummary => $"Server layout: {RouteSummary}";
+    public string LayoutSummary => $"Server layout: {RouteSummary}; {PortalSummary()}";
 
     public double PreviewScale => ComputePreviewScale();
     public double LocalBoxLeft => PreviewOriginX(-PreviewBoundsLeft());
@@ -254,6 +266,11 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     public double PeerGlowTop => GlowTop(false);
     public double PeerGlowWidth => GlowWidth(false);
     public double PeerGlowHeight => GlowHeight(false);
+
+    private double LocalWidth => _localWidth;
+    private double LocalHeight => _localHeight;
+    private double PeerWidth => _peerWidth;
+    private double PeerHeight => _peerHeight;
 
     public string StatusText
     {
@@ -411,11 +428,11 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             ? new { x = (int)Math.Round(PeerOffsetX), y = (int)Math.Round(PeerOffsetY) }
             : new { x = 0, y = 0 };
         var serverSize = IsServerMode
-            ? new { width = (int)LocalWidth, height = (int)LocalHeight }
-            : new { width = (int)PeerWidth, height = (int)PeerHeight };
+            ? new { width = (int)Math.Round(LocalWidth), height = (int)Math.Round(LocalHeight) }
+            : new { width = (int)Math.Round(PeerWidth), height = (int)Math.Round(PeerHeight) };
         var clientSize = IsServerMode
-            ? new { width = (int)PeerWidth, height = (int)PeerHeight }
-            : new { width = (int)LocalWidth, height = (int)LocalHeight };
+            ? new { width = (int)Math.Round(PeerWidth), height = (int)Math.Round(PeerHeight) }
+            : new { width = (int)Math.Round(LocalWidth), height = (int)Math.Round(LocalHeight) };
 
         var config = new
         {
@@ -464,6 +481,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             var client = root["client"] as JsonObject;
             var input = root["input"] as JsonObject;
             var layout = root["layout"] as JsonObject;
+            var screens = layout?["screens"] as JsonArray;
 
             var serverName = ReadString(server, "name");
             var clientName = ReadString(client, "name");
@@ -487,6 +505,16 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (ReadBool(input, "reverse_scroll") is { } reverseScroll)
             {
                 _reverseScroll = reverseScroll;
+            }
+            if (screens is not null)
+            {
+                var peerSize = IsServerMode
+                    ? FindScreenSize(screens, AllowedClient)
+                    : FindScreenSize(screens, ServerName);
+                if (peerSize is { } size)
+                {
+                    SetPeerSizeFields(size.Width, size.Height);
+                }
             }
 
             ApplySavedLayout(layout);
@@ -596,6 +624,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         var sections = new List<string>
         {
             $"Status: {StatusText}\nMode: {Mode}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nClient server: {ClientServerAddress}\nRoute: {RouteSummary}\nDebug capture log: {DebugLogging}\nReverse scroll: {IsServerMode && ReverseScroll}\n" +
+            $"Admin display model: local={Math.Round(LocalWidth)}x{Math.Round(LocalHeight)} peer={Math.Round(PeerWidth)}x{Math.Round(PeerHeight)} offset=({Math.Round(PeerOffsetX)},{Math.Round(PeerOffsetY)}) {PortalSummary()}\n" +
             $"Daemon: {daemon}\nDeskBridge processes:\n{DescribeDeskBridgeProcesses()}",
         };
 
@@ -713,6 +742,13 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         _peerOffsetY = Math.Clamp(y, -PeerHeight, LocalHeight);
     }
 
+    private void SetPeerSizeFields(double width, double height)
+    {
+        _peerWidth = Math.Max(1, width);
+        _peerHeight = Math.Max(1, height);
+        SetPeerOffsetFields(PeerOffsetX, PeerOffsetY);
+    }
+
     private double ComputePreviewScale()
     {
         var boundsWidth = Math.Max(1, PreviewBoundsRight() - PreviewBoundsLeft());
@@ -742,6 +778,36 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private double PreviewBoundsTop() => Math.Min(0, PeerOffsetY);
     private double PreviewBoundsRight() => Math.Max(LocalWidth, PeerOffsetX + PeerWidth);
     private double PreviewBoundsBottom() => Math.Max(LocalHeight, PeerOffsetY + PeerHeight);
+
+    private string PortalSummary()
+    {
+        var edge = LocalToPeerEdge();
+        if (edge is "left" or "right")
+        {
+            var start = OverlapTop();
+            var end = OverlapBottom();
+            if (end <= start)
+            {
+                return "portal: no vertical overlap";
+            }
+
+            return $"portal: y {Math.Round(start)}-{Math.Round(end)} of {Math.Round(LocalHeight)}";
+        }
+
+        var xStart = OverlapLeft();
+        var xEnd = OverlapRight();
+        if (xEnd <= xStart)
+        {
+            return "portal: no horizontal overlap";
+        }
+
+        return $"portal: x {Math.Round(xStart)}-{Math.Round(xEnd)} of {Math.Round(LocalWidth)}";
+    }
+
+    private double OverlapLeft() => Math.Max(0, PeerOffsetX);
+    private double OverlapRight() => Math.Min(LocalWidth, PeerOffsetX + PeerWidth);
+    private double OverlapTop() => Math.Max(0, PeerOffsetY);
+    private double OverlapBottom() => Math.Min(LocalHeight, PeerOffsetY + PeerHeight);
 
     private static string? ReadString(JsonObject? obj, string key)
     {
@@ -787,6 +853,26 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         return null;
     }
 
+    private static (double Width, double Height)? FindScreenSize(JsonArray screens, string screenName)
+    {
+        foreach (var screen in screens.OfType<JsonObject>())
+        {
+            if (ReadString(screen, "name") != screenName)
+            {
+                continue;
+            }
+
+            if (screen["size"] is JsonObject size
+                && ReadNumber(size, "width") is { } width
+                && ReadNumber(size, "height") is { } height)
+            {
+                return (width, height);
+            }
+        }
+
+        return null;
+    }
+
     private static double? ReadNumber(JsonObject obj, string key)
     {
         var node = obj[key];
@@ -804,6 +890,37 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             return null;
         }
     }
+
+    private static (double Width, double Height) ReadPlatformScreenSize()
+    {
+        try
+        {
+            _ = SetProcessDPIAware();
+            var width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            var height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if (width <= 0 || height <= 0)
+            {
+                width = GetSystemMetrics(SM_CXSCREEN);
+                height = GetSystemMetrics(SM_CYSCREEN);
+            }
+            if (width > 0 && height > 0)
+            {
+                return (width, height);
+            }
+        }
+        catch
+        {
+            // Fall through to conservative defaults when the Win32 query is unavailable.
+        }
+
+        return (DefaultLocalWidth, DefaultLocalHeight);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int nIndex);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetProcessDPIAware();
 
     private string LocalToPeerEdge()
     {
@@ -865,9 +982,11 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         var edge = local ? LocalToPeerEdge() : Opposite(LocalToPeerEdge());
         var left = local ? LocalBoxLeft : PeerBoxLeft;
         var width = local ? LocalBoxWidth : PeerBoxWidth;
+        var scale = PreviewScale;
         return edge switch
         {
-            "right" => left + width - 5,
+            "right" => left + width - PortalGlowThickness,
+            "top" or "bottom" => left + PortalLeftForScreen(local) * scale,
             _ => left,
         };
     }
@@ -877,9 +996,11 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         var edge = local ? LocalToPeerEdge() : Opposite(LocalToPeerEdge());
         var top = local ? LocalBoxTop : PeerBoxTop;
         var height = local ? LocalBoxHeight : PeerBoxHeight;
+        var scale = PreviewScale;
         return edge switch
         {
-            "bottom" => top + height - 5,
+            "left" or "right" => top + PortalTopForScreen(local) * scale,
+            "bottom" => top + height - PortalGlowThickness,
             _ => top,
         };
     }
@@ -887,16 +1008,31 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private double GlowWidth(bool local)
     {
         var edge = local ? LocalToPeerEdge() : Opposite(LocalToPeerEdge());
-        var width = local ? LocalBoxWidth : PeerBoxWidth;
-        return edge is "left" or "right" ? 5 : width;
+        var scale = PreviewScale;
+        return edge switch
+        {
+            "left" or "right" => PortalGlowThickness,
+            "top" or "bottom" => Math.Max(0, (OverlapRight() - OverlapLeft()) * scale),
+            _ => local ? LocalBoxWidth : PeerBoxWidth,
+        };
     }
 
     private double GlowHeight(bool local)
     {
         var edge = local ? LocalToPeerEdge() : Opposite(LocalToPeerEdge());
         var height = local ? LocalBoxHeight : PeerBoxHeight;
-        return edge is "top" or "bottom" ? 5 : height;
+        var scale = PreviewScale;
+        return edge switch
+        {
+            "left" or "right" => Math.Max(0, (OverlapBottom() - OverlapTop()) * scale),
+            "top" or "bottom" => PortalGlowThickness,
+            _ => height,
+        };
     }
+
+    private double PortalLeftForScreen(bool local) => local ? OverlapLeft() : OverlapLeft() - PeerOffsetX;
+
+    private double PortalTopForScreen(bool local) => local ? OverlapTop() : OverlapTop() - PeerOffsetY;
 
     private static string Opposite(string edge)
     {
