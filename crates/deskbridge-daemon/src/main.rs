@@ -156,6 +156,8 @@ enum DebugCliCommand {
         #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
         dy: i32,
     },
+    /// Read the server-side route layout currently used by the active target session.
+    RouteStatus,
 }
 
 #[tokio::main]
@@ -378,6 +380,7 @@ fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
             dx,
             dy,
         },
+        DebugCliCommand::RouteStatus => DebugCommand::RouteStatus,
     }
 }
 

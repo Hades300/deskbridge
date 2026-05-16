@@ -107,11 +107,13 @@ Send debug commands through the server to the connected Mac client:
 ```bash
 deskbridge debug --server 192.168.2.5:24800 --name mac display-info
 deskbridge debug --server 192.168.2.5:24800 --name mac move-mouse --dx 20 --dy 0
+deskbridge debug --server 192.168.2.5:24800 --name mac route-status
 deskbridge debug --server 192.168.2.5:24800 --name mac route-probe --steps 3 --dx 80 --dy -2
 deskbridge debug --server 192.168.2.5:24800 --name mac logs
 ```
 
 The debug command uses the existing DeskBridge connection, so the Mac does not need to open an inbound port. `display-info` returns the target display and pointer location, `move-mouse` runs the same target-side input path as normal remote control, and `logs` returns recent target-side debug entries for the active client session.
+`route-status` is server-side and reports the effective screen sizes, active route screen, and configured edge mappings used by the current target client session.
 `route-probe` is server-side: the server uses its current layout to synthesize an edge crossing to the target client, sends the resulting `MouseAbs` plus continued `MouseMove` packets, and waits for client acknowledgements. This validates the live server-to-client route without touching the Windows mouse.
 
 Simulate a configured edge crossing without moving the real mouse:

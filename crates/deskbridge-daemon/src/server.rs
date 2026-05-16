@@ -35,7 +35,7 @@ struct SessionHandle {
     session_id: Uuid,
     shutdown_tx: mpsc::UnboundedSender<()>,
     debug_tx: mpsc::UnboundedSender<DebugEnvelope>,
-    route_probe_tx: mpsc::UnboundedSender<RouteProbeEnvelope>,
+    route_debug_tx: mpsc::UnboundedSender<RouteDebugEnvelope>,
 }
 
 #[derive(Debug)]
@@ -45,10 +45,16 @@ struct DebugEnvelope {
 }
 
 #[derive(Debug)]
-struct RouteProbeEnvelope {
+struct RouteDebugEnvelope {
     request_id: Uuid,
-    options: RouteProbeOptions,
+    command: RouteDebugCommand,
     response_tx: oneshot::Sender<DebugResponse>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RouteDebugCommand {
+    Probe(RouteProbeOptions),
+    Status,
 }
 
 #[derive(Debug)]
@@ -225,7 +231,7 @@ async fn handle_client(
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
     let (debug_tx, mut debug_rx) = mpsc::unbounded_channel();
-    let (route_probe_tx, mut route_probe_rx) = mpsc::unbounded_channel();
+    let (route_debug_tx, mut route_debug_rx) = mpsc::unbounded_channel();
     let session_key = hello.screen_name.to_ascii_lowercase();
     if let Some(previous) = sessions.lock().await.insert(
         session_key.clone(),
@@ -233,7 +239,7 @@ async fn handle_client(
             session_id,
             shutdown_tx,
             debug_tx,
-            route_probe_tx,
+            route_debug_tx,
         },
     ) {
         let _ = previous.shutdown_tx.send(());
@@ -256,7 +262,7 @@ async fn handle_client(
         &hello.screen_name,
         &mut shutdown_rx,
         &mut debug_rx,
-        &mut route_probe_rx,
+        &mut route_debug_rx,
         capture_tx,
     )
     .await;
@@ -270,7 +276,7 @@ async fn run_client_session(
     client_name: &str,
     shutdown_rx: &mut mpsc::UnboundedReceiver<()>,
     debug_rx: &mut mpsc::UnboundedReceiver<DebugEnvelope>,
-    route_probe_rx: &mut mpsc::UnboundedReceiver<RouteProbeEnvelope>,
+    route_debug_rx: &mut mpsc::UnboundedReceiver<RouteDebugEnvelope>,
     capture_tx: crate::capture::CaptureSender,
 ) -> Result<()> {
     let mut ticker = time::interval(Duration::from_secs(5));
@@ -327,17 +333,28 @@ async fn run_client_session(
                 }
                 pending_debug.insert(request_id, debug.response_tx);
             }
-            Some(probe) = route_probe_rx.recv() => {
+            Some(route_debug) = route_debug_rx.recv() => {
+                let RouteDebugCommand::Probe(probe_options) = route_debug.command else {
+                    let _ = route_debug.response_tx.send(DebugResponse {
+                        request_id: route_debug.request_id,
+                        ok: true,
+                        message: "route status read".to_string(),
+                        display: None,
+                        logs: build_route_status_logs(options, client_name, &demo_router, route_debug.request_id),
+                    });
+                    continue;
+                };
+
                 let (events, logs) = match build_route_probe_events(
                     options,
                     client_name,
-                    probe.options,
-                    probe.request_id,
+                    probe_options,
+                    route_debug.request_id,
                 ) {
                     Ok(probe_events) => probe_events,
                     Err(err) => {
-                        let _ = probe.response_tx.send(debug_error_response(
-                            probe.request_id,
+                        let _ = route_debug.response_tx.send(debug_error_response(
+                            route_debug.request_id,
                             format!("{err:#}"),
                         ));
                         continue;
@@ -350,20 +367,20 @@ async fn run_client_session(
                         seq,
                         event,
                     })).await?;
-                    route_probe_seq_index.insert(seq, probe.request_id);
+                    route_probe_seq_index.insert(seq, route_debug.request_id);
                     seqs.insert(seq);
                 }
 
                 if seqs.is_empty() {
-                    let _ = probe.response_tx.send(debug_error_response(
-                        probe.request_id,
+                    let _ = route_debug.response_tx.send(debug_error_response(
+                        route_debug.request_id,
                         "route probe did not produce input events".to_string(),
                     ));
                 } else {
-                    pending_route_probes.insert(probe.request_id, PendingRouteProbe {
+                    pending_route_probes.insert(route_debug.request_id, PendingRouteProbe {
                         remaining_seqs: seqs,
                         logs,
-                        response_tx: probe.response_tx,
+                        response_tx: route_debug.response_tx,
                     });
                 }
             }
@@ -439,17 +456,27 @@ async fn handle_diagnostic_session(
                 dx,
                 dy,
             } => {
-                run_route_probe(
+                forward_route_debug_request(
                     stream,
                     target_screen,
                     sessions,
                     request.request_id,
-                    RouteProbeOptions {
+                    RouteDebugCommand::Probe(RouteProbeOptions {
                         edge,
                         steps,
                         dx,
                         dy,
-                    },
+                    }),
+                )
+                .await
+            }
+            DebugCommand::RouteStatus => {
+                forward_route_debug_request(
+                    stream,
+                    target_screen,
+                    sessions,
+                    request.request_id,
+                    RouteDebugCommand::Status,
                 )
                 .await
             }
@@ -480,14 +507,14 @@ struct RouteProbeOptions {
     dy: i32,
 }
 
-async fn run_route_probe(
+async fn forward_route_debug_request(
     stream: &mut TcpStream,
     target_screen: &str,
     sessions: SessionRegistry,
     request_id: Uuid,
-    probe_options: RouteProbeOptions,
+    command: RouteDebugCommand,
 ) -> Result<()> {
-    let Some(route_probe_tx) = route_probe_sender(target_screen, &sessions).await else {
+    let Some(route_debug_tx) = route_debug_sender(target_screen, &sessions).await else {
         write_frame(
             stream,
             &Message::Status(Status {
@@ -500,10 +527,10 @@ async fn run_route_probe(
     };
 
     let (response_tx, response_rx) = oneshot::channel();
-    if route_probe_tx
-        .send(RouteProbeEnvelope {
+    if route_debug_tx
+        .send(RouteDebugEnvelope {
             request_id,
-            options: probe_options,
+            command,
             response_tx,
         })
         .is_err()
@@ -526,7 +553,7 @@ async fn run_route_probe(
                 stream,
                 &Message::DebugResponse(debug_error_response(
                     request_id,
-                    "route probe response channel closed".to_string(),
+                    "route debug response channel closed".to_string(),
                 )),
             )
             .await?;
@@ -536,7 +563,7 @@ async fn run_route_probe(
                 stream,
                 &Message::DebugResponse(debug_error_response(
                     request_id,
-                    "route probe timed out waiting for input acknowledgements".to_string(),
+                    "route debug request timed out".to_string(),
                 )),
             )
             .await?;
@@ -546,15 +573,15 @@ async fn run_route_probe(
     Ok(())
 }
 
-async fn route_probe_sender(
+async fn route_debug_sender(
     target_screen: &str,
     sessions: &SessionRegistry,
-) -> Option<mpsc::UnboundedSender<RouteProbeEnvelope>> {
+) -> Option<mpsc::UnboundedSender<RouteDebugEnvelope>> {
     let session_key = target_screen.to_ascii_lowercase();
     let sessions = sessions.lock().await;
     sessions
         .get(&session_key)
-        .map(|session| session.route_probe_tx.clone())
+        .map(|session| session.route_debug_tx.clone())
 }
 
 fn build_route_probe_events(
@@ -633,6 +660,82 @@ fn build_route_probe_events(
     }
 
     Ok((events, logs))
+}
+
+fn build_route_status_logs(
+    options: &ServerOptions,
+    target_screen: &str,
+    router: &Option<InputRouter>,
+    request_id: Uuid,
+) -> Vec<String> {
+    let mut logs = vec![
+        format!(
+            "route status request={request_id} server={} target={target_screen}",
+            options.name
+        ),
+        format!(
+            "listen={} capture={} demo_events={} heartbeat_ms={}",
+            options.listen, options.capture, options.demo_events, options.heartbeat_ms
+        ),
+        format!(
+            "active_route_screen={}",
+            router
+                .as_ref()
+                .map(|router| router.active_screen().to_string())
+                .unwrap_or_else(|| "unavailable".to_string())
+        ),
+    ];
+
+    for screen in &options.layout.screens {
+        logs.push(format!(
+            "screen: {} {}x{}",
+            screen.name, screen.size.width, screen.size.height
+        ));
+    }
+
+    let mut target_link_count = 0_u32;
+    for link in options
+        .layout
+        .links
+        .iter()
+        .filter(|link| link.from == options.name)
+    {
+        if link.to == target_screen {
+            target_link_count += 1;
+        }
+
+        match sample_point_on_edge(&options.layout, &link.from, link.edge).and_then(|(x, y)| {
+            options
+                .layout
+                .transition(&link.from, link.edge, x, y)
+                .map(|transition| (x, y, transition))
+        }) {
+            Some((x, y, transition)) => logs.push(format!(
+                "link: {} {:?} -> {} source=({}, {}) target=({}, {}) return_edge={:?}",
+                link.from,
+                link.edge,
+                link.to,
+                x,
+                y,
+                transition.x,
+                transition.y,
+                transition.target_edge
+            )),
+            None => logs.push(format!(
+                "link: {} {:?} -> {} not mappable",
+                link.from, link.edge, link.to
+            )),
+        }
+    }
+
+    if target_link_count == 0 {
+        logs.push(format!(
+            "warning: no link from {} to target {}",
+            options.name, target_screen
+        ));
+    }
+
+    logs
 }
 
 async fn forward_debug_request(
@@ -1196,6 +1299,91 @@ mod tests {
         assert!(response.ok);
         assert!(response.logs.iter().any(|line| line.contains("event 0")));
         assert!(response.logs.iter().any(|line| line == "ack seq=3"));
+    }
+
+    #[tokio::test]
+    async fn diagnostic_route_status_reports_effective_client_layout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let options = test_options(listen);
+        let allow = HashSet::from(["mac".to_string()]);
+        let (capture_tx, _) = crate::capture::channel();
+        let sessions = SessionRegistry::default();
+
+        tokio::spawn({
+            let options = options.clone();
+            let allow = allow.clone();
+            let capture_tx = capture_tx.clone();
+            let sessions = sessions.clone();
+            async move {
+                for _ in 0..2 {
+                    let (stream, peer) = listener.accept().await.unwrap();
+                    tokio::spawn(handle_client(
+                        stream,
+                        peer,
+                        options.clone(),
+                        allow.clone(),
+                        capture_tx.clone(),
+                        sessions.clone(),
+                    ));
+                }
+            }
+        });
+
+        let mut client = TcpStream::connect(listen).await.unwrap();
+        write_frame(
+            &mut client,
+            &Message::Hello(Hello::client("mac").with_screen_size(Size {
+                width: 1512,
+                height: 982,
+            })),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            read_frame(&mut client).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let mut diag = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut diag, &Message::Hello(Hello::diagnostic("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut diag).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let request_id = Uuid::new_v4();
+        write_frame(
+            &mut diag,
+            &Message::DebugRequest(DebugRequest {
+                request_id,
+                command: DebugCommand::RouteStatus,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = match tokio::time::timeout(Duration::from_secs(1), read_frame(&mut diag))
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Message::DebugResponse(response) => response,
+            other => panic!("expected route status debug response, got {other:?}"),
+        };
+        assert_eq!(response.request_id, request_id);
+        assert!(response.ok);
+        assert!(
+            response
+                .logs
+                .iter()
+                .any(|line| line == "screen: mac 1512x982")
+        );
+        assert!(response.logs.iter().any(|line| {
+            line == "link: windows Right -> mac source=(1919, 540) target=(1, 491) return_edge=Left"
+        }));
     }
 
     #[tokio::test]

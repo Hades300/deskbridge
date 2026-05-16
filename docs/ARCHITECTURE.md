@@ -82,6 +82,7 @@ The first supported commands are:
 
 - `display-info`: read the target client's display size and current pointer location.
 - `move-mouse`: run a target-side mouse injection test through the same input sink used for normal remote control.
+- `route-status`: read the server-side effective layout and edge mapping for the active target session.
 - `route-probe`: ask the server to synthesize a configured edge crossing, deliver the resulting input packets to the target client, and return only after the client acknowledges them.
 - `logs`: return recent target-side debug entries kept in the active client session.
 

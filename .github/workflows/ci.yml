@@ -153,10 +153,13 @@ jobs:
           fi
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac display-info >debug-display.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac move-mouse --dx 1 --dy 0 >debug-move.out
+          ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac route-status >debug-route-status.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac route-probe --steps 2 --dx 40 --dy -1 >debug-route.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac logs >debug-logs.out
           grep -q "display:" debug-display.out
           grep -q "ok: true" debug-move.out
+          grep -q "route status read" debug-route-status.out
+          grep -q "link: windows Right -> mac" debug-route-status.out
           grep -q "route probe delivered and acknowledged 3 events" debug-route.out
           grep -q "event 0: target=mac MouseAbs" debug-route.out
           grep -q "ack seq=" debug-route.out
