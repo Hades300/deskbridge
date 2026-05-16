@@ -122,10 +122,35 @@ jobs:
           set -euo pipefail
           RUST_LOG=info ./target/debug/deskbridge server --listen 127.0.0.1:24883 --allow mac >debug-server.log 2>&1 &
           SERVER_PID=$!
-          RUST_LOG=info ./target/debug/deskbridge client --server 127.0.0.1:24883 --name mac --dry-run --once >debug-client.log 2>&1 &
+          CLIENT_PID=""
+          cleanup() {
+            kill "$SERVER_PID" 2>/dev/null || true
+            if [[ -n "${CLIENT_PID:-}" ]]; then
+              kill "$CLIENT_PID" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          for _ in {1..20}; do
+            nc -z 127.0.0.1 24883 && break
+            sleep 0.2
+          done
+          RUST_LOG=info ./target/debug/deskbridge client --server 127.0.0.1:24883 --name mac --dry-run >debug-client.log 2>&1 &
           CLIENT_PID=$!
-          trap 'kill "$SERVER_PID" "$CLIENT_PID" 2>/dev/null || true' EXIT
-          sleep 1
+          for _ in {1..30}; do
+            grep -q "client accepted" debug-server.log && break
+            if ! kill -0 "$CLIENT_PID" 2>/dev/null; then
+              cat debug-client.log
+              echo "debug client exited before connecting"
+              exit 1
+            fi
+            sleep 0.2
+          done
+          if ! grep -q "client accepted" debug-server.log; then
+            cat debug-server.log
+            cat debug-client.log
+            echo "debug client did not connect"
+            exit 1
+          fi
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac display-info >debug-display.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac move-mouse --dx 1 --dy 0 >debug-move.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac logs >debug-logs.out

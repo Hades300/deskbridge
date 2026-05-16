@@ -91,10 +91,27 @@ DEBUG_MOVE_OUT="$(mktemp /tmp/deskbridge-debug-move.XXXXXX)"
 DEBUG_LOGS_OUT="$(mktemp /tmp/deskbridge-debug-logs.XXXXXX)"
 RUST_LOG=info "$ROOT/target/debug/deskbridge" server --listen 127.0.0.1:24883 --allow mac >"$DEBUG_SERVER_LOG" 2>&1 &
 DEBUG_SERVER_PID=$!
-sleep 0.5
-RUST_LOG=info "$ROOT/target/debug/deskbridge" client --server 127.0.0.1:24883 --name mac --dry-run --once >"$DEBUG_CLIENT_LOG" 2>&1 &
+for _ in {1..20}; do
+  nc -z 127.0.0.1 24883 >/dev/null 2>&1 && break
+  sleep 0.2
+done
+RUST_LOG=info "$ROOT/target/debug/deskbridge" client --server 127.0.0.1:24883 --name mac --dry-run >"$DEBUG_CLIENT_LOG" 2>&1 &
 DEBUG_CLIENT_PID=$!
-sleep 0.8
+for _ in {1..30}; do
+  grep -q "client accepted" "$DEBUG_SERVER_LOG" && break
+  if ! kill -0 "$DEBUG_CLIENT_PID" >/dev/null 2>&1; then
+    cat "$DEBUG_CLIENT_LOG"
+    echo "debug client exited before connecting"
+    exit 1
+  fi
+  sleep 0.2
+done
+if ! grep -q "client accepted" "$DEBUG_SERVER_LOG"; then
+  cat "$DEBUG_SERVER_LOG"
+  cat "$DEBUG_CLIENT_LOG"
+  echo "debug client did not connect"
+  exit 1
+fi
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac display-info >"$DEBUG_DISPLAY_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac move-mouse --dx 1 --dy 0 >"$DEBUG_MOVE_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac logs >"$DEBUG_LOGS_OUT"
