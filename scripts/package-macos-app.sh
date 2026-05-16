@@ -12,6 +12,9 @@ HELPER_CONTENTS="$HELPER_APP/Contents"
 HELPER_MACOS="$HELPER_CONTENTS/MacOS"
 SIGN_IDENTITY="${DESKBRIDGE_CODESIGN_IDENTITY:-}"
 SIGN_KEYCHAIN="${DESKBRIDGE_CODESIGN_KEYCHAIN:-}"
+BUILD_VERSION="${DESKBRIDGE_BUILD_VERSION:-0.1.0}"
+BUNDLE_SHORT_VERSION="${BUILD_VERSION#v}"
+BUNDLE_BUILD_VERSION="${DESKBRIDGE_BUNDLE_BUILD_VERSION:-${GITHUB_RUN_NUMBER:-1}}"
 
 if [[ -z "$SIGN_IDENTITY" && "${DESKBRIDGE_USE_LOCAL_SIGNING:-0}" == "1" ]]; then
   eval "$("$ROOT/scripts/ensure-local-macos-signing-identity.sh")"
@@ -48,7 +51,9 @@ cp "$ROOT/target/debug/deskbridge" "$HELPER_MACOS/deskbridge"
 
 /usr/bin/python3 - <<PY
 from pathlib import Path
-app_plist = """<?xml version="1.0" encoding="UTF-8"?>
+short_version = "$BUNDLE_SHORT_VERSION"
+build_version = "$BUNDLE_BUILD_VERSION"
+app_plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -63,9 +68,9 @@ app_plist = """<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>{short_version}</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>{build_version}</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>
@@ -73,7 +78,7 @@ app_plist = """<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>
 """
-helper_plist = """<?xml version="1.0" encoding="UTF-8"?>
+helper_plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -88,9 +93,9 @@ helper_plist = """<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>{short_version}</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>{build_version}</string>
   <key>LSBackgroundOnly</key>
   <true/>
 </dict>
