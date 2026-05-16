@@ -1,14 +1,9 @@
 import SwiftUI
 
-private enum LayoutDragTarget: Equatable {
-    case local
-    case peer
-}
-
 struct DeskBridgeView: View {
     @ObservedObject var model: DeskBridgeModel
     @State private var dragStartOffset: CGSize?
-    @State private var dragTarget: LayoutDragTarget?
+    @State private var dragStartScale: Double = 0.08
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -136,17 +131,7 @@ struct DeskBridgeView: View {
             }
 
             GeometryReader { proxy in
-                let scale = layoutScale(for: proxy.size)
-                let localSize = CGSize(width: model.localDisplayWidth * scale, height: model.localDisplayHeight * scale)
-                let peerSize = CGSize(width: model.peerDisplayWidth * scale, height: model.peerDisplayHeight * scale)
-                let localOrigin = CGPoint(
-                    x: proxy.size.width / 2 - localSize.width / 2,
-                    y: proxy.size.height / 2 - localSize.height / 2
-                )
-                let peerOrigin = CGPoint(
-                    x: localOrigin.x + model.peerOffsetX * scale,
-                    y: localOrigin.y + model.peerOffsetY * scale
-                )
+                let metrics = layoutMetrics(for: proxy.size)
 
                 ZStack(alignment: .topLeading) {
                     RoundedRectangle(cornerRadius: 8)
@@ -157,22 +142,27 @@ struct DeskBridgeView: View {
                     screenBox(
                         title: model.screenName,
                         subtitle: model.localRoleLabel,
-                        size: localSize,
+                        size: metrics.localSize,
                         glowEdge: model.localGlowEdge,
                         isLocal: true
                     )
-                    .position(x: localOrigin.x + localSize.width / 2, y: localOrigin.y + localSize.height / 2)
-                    .gesture(screenDragGesture(target: .local, scale: scale))
+                    .position(
+                        x: metrics.localOrigin.x + metrics.localSize.width / 2,
+                        y: metrics.localOrigin.y + metrics.localSize.height / 2
+                    )
 
                     screenBox(
                         title: model.peerScreenName,
                         subtitle: model.peerRoleLabel,
-                        size: peerSize,
+                        size: metrics.peerSize,
                         glowEdge: model.peerGlowEdge,
                         isLocal: false
                     )
-                    .position(x: peerOrigin.x + peerSize.width / 2, y: peerOrigin.y + peerSize.height / 2)
-                    .gesture(screenDragGesture(target: .peer, scale: scale))
+                    .position(
+                        x: metrics.peerOrigin.x + metrics.peerSize.width / 2,
+                        y: metrics.peerOrigin.y + metrics.peerSize.height / 2
+                    )
+                    .gesture(screenDragGesture(scale: metrics.scale))
                 }
             }
             .frame(height: 190)
@@ -262,39 +252,69 @@ struct DeskBridgeView: View {
         }
     }
 
-    private func layoutScale(for size: CGSize) -> Double {
-        let totalWidth = model.localDisplayWidth + model.peerDisplayWidth
-        let totalHeight = model.localDisplayHeight + model.peerDisplayHeight
-        let widthScale = max(0.04, Double(size.width - 80) / totalWidth)
-        let heightScale = max(0.04, Double(size.height - 50) / totalHeight)
-        return min(widthScale, heightScale, 0.10)
+    private struct LayoutMetrics {
+        let scale: Double
+        let localSize: CGSize
+        let peerSize: CGSize
+        let localOrigin: CGPoint
+        let peerOrigin: CGPoint
     }
 
-    private func screenDragGesture(target: LayoutDragTarget, scale: Double) -> some Gesture {
+    private func layoutMetrics(for size: CGSize) -> LayoutMetrics {
+        let padding = 18.0
+        let boundsLeft = min(0, model.peerOffsetX)
+        let boundsTop = min(0, model.peerOffsetY)
+        let boundsRight = max(model.localDisplayWidth, model.peerOffsetX + model.peerDisplayWidth)
+        let boundsBottom = max(model.localDisplayHeight, model.peerOffsetY + model.peerDisplayHeight)
+        let boundsWidth = max(1, boundsRight - boundsLeft)
+        let boundsHeight = max(1, boundsBottom - boundsTop)
+        let widthScale = max(0.001, Double(size.width) - padding * 2) / boundsWidth
+        let heightScale = max(0.001, Double(size.height) - padding * 2) / boundsHeight
+        let scale = min(widthScale, heightScale, 0.10)
+        let scaledWidth = boundsWidth * scale
+        let scaledHeight = boundsHeight * scale
+        let originX = max(padding, (Double(size.width) - scaledWidth) / 2)
+        let originY = max(padding, (Double(size.height) - scaledHeight) / 2)
+        let localOrigin = CGPoint(
+            x: originX + (-boundsLeft) * scale,
+            y: originY + (-boundsTop) * scale
+        )
+        let peerOrigin = CGPoint(
+            x: localOrigin.x + model.peerOffsetX * scale,
+            y: localOrigin.y + model.peerOffsetY * scale
+        )
+
+        return LayoutMetrics(
+            scale: scale,
+            localSize: CGSize(width: model.localDisplayWidth * scale, height: model.localDisplayHeight * scale),
+            peerSize: CGSize(width: model.peerDisplayWidth * scale, height: model.peerDisplayHeight * scale),
+            localOrigin: localOrigin,
+            peerOrigin: peerOrigin
+        )
+    }
+
+    private func screenDragGesture(scale: Double) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                if dragStartOffset == nil || dragTarget != target {
+                if dragStartOffset == nil {
                     dragStartOffset = CGSize(width: model.peerOffsetX, height: model.peerOffsetY)
-                    dragTarget = target
+                    dragStartScale = scale
                 }
 
                 let start = dragStartOffset ?? .zero
-                let deltaX = value.translation.width / scale
-                let deltaY = value.translation.height / scale
-                switch target {
-                case .peer:
-                    model.peerOffsetX = start.width + deltaX
-                    model.peerOffsetY = start.height + deltaY
-                case .local:
-                    model.peerOffsetX = start.width - deltaX
-                    model.peerOffsetY = start.height - deltaY
-                }
+                let deltaX = value.translation.width / dragStartScale
+                let deltaY = value.translation.height / dragStartScale
+                model.peerOffsetX = clamp(start.width + deltaX, lower: -model.peerDisplayWidth, upper: model.localDisplayWidth)
+                model.peerOffsetY = clamp(start.height + deltaY, lower: -model.peerDisplayHeight, upper: model.localDisplayHeight)
             }
             .onEnded { _ in
                 dragStartOffset = nil
-                dragTarget = nil
                 model.snapPeerToNearestEdge()
             }
+    }
+
+    private func clamp(_ value: Double, lower: Double, upper: Double) -> Double {
+        min(max(value, lower), upper)
     }
 
     private var controlBar: some View {

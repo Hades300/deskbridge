@@ -126,11 +126,7 @@
           <Border x:Name="LocalScreen"
                   Canvas.Left="{Binding LocalBoxLeft}" Canvas.Top="{Binding LocalBoxTop}"
                   Width="{Binding LocalBoxWidth}" Height="{Binding LocalBoxHeight}"
-                  CornerRadius="7" BorderThickness="1" BorderBrush="#668CCBFF" Background="#228CCBFF"
-                  Cursor="SizeAll"
-                  MouseLeftButtonDown="LocalScreen_MouseLeftButtonDown"
-                  MouseMove="LocalScreen_MouseMove"
-                  MouseLeftButtonUp="LocalScreen_MouseLeftButtonUp">
+                  CornerRadius="7" BorderThickness="1" BorderBrush="#668CCBFF" Background="#228CCBFF">
             <StackPanel VerticalAlignment="Center">
               <TextBlock Text="{Binding LocalDisplayName}" FontWeight="SemiBold" HorizontalAlignment="Center"/>
               <TextBlock Text="{Binding LocalNameLabel}" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" HorizontalAlignment="Center"/>

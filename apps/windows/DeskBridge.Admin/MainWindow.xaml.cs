@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -14,7 +15,7 @@ public partial class MainWindow : Window
     private Point? _dragStartPoint;
     private double _dragStartOffsetX;
     private double _dragStartOffsetY;
-    private bool _draggingLocalScreen;
+    private double _dragStartScale = MainWindowModel.MinimumPreviewScale;
 
     public MainWindow()
     {
@@ -26,24 +27,9 @@ public partial class MainWindow : Window
 
     private MainWindowModel Model => (MainWindowModel)DataContext;
 
-    private void LocalScreen_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        BeginScreenDrag(sender, e, draggingLocalScreen: true);
-    }
-
-    private void LocalScreen_MouseMove(object sender, MouseEventArgs e)
-    {
-        ContinueScreenDrag(e);
-    }
-
-    private void LocalScreen_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        EndScreenDrag(e);
-    }
-
     private void PeerScreen_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        BeginScreenDrag(sender, e, draggingLocalScreen: false);
+        BeginScreenDrag(sender, e);
     }
 
     private void PeerScreen_MouseMove(object sender, MouseEventArgs e)
@@ -56,12 +42,12 @@ public partial class MainWindow : Window
         EndScreenDrag(e);
     }
 
-    private void BeginScreenDrag(object sender, MouseButtonEventArgs e, bool draggingLocalScreen)
+    private void BeginScreenDrag(object sender, MouseButtonEventArgs e)
     {
         _dragStartPoint = e.GetPosition(LayoutCanvas);
         _dragStartOffsetX = Model.PeerOffsetX;
         _dragStartOffsetY = Model.PeerOffsetY;
-        _draggingLocalScreen = draggingLocalScreen;
+        _dragStartScale = Model.PreviewScale;
         Mouse.Capture((IInputElement)sender);
         e.Handled = true;
     }
@@ -74,13 +60,8 @@ public partial class MainWindow : Window
         }
 
         var current = e.GetPosition(LayoutCanvas);
-        var deltaX = (current.X - start.X) / MainWindowModel.LayoutScale;
-        var deltaY = (current.Y - start.Y) / MainWindowModel.LayoutScale;
-        if (_draggingLocalScreen)
-        {
-            deltaX = -deltaX;
-            deltaY = -deltaY;
-        }
+        var deltaX = (current.X - start.X) / _dragStartScale;
+        var deltaY = (current.Y - start.Y) / _dragStartScale;
 
         Model.SetPeerOffset(
             _dragStartOffsetX + deltaX,
@@ -112,16 +93,23 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private double _peerOffsetX = 1920;
     private double _peerOffsetY;
 
-    public const double LayoutScale = 0.08;
+    public const double MinimumPreviewScale = 0.02;
+    private const double MaximumPreviewScale = 0.10;
     private const double LocalWidth = 1920;
     private const double LocalHeight = 1080;
     private const double PeerWidth = 1728;
     private const double PeerHeight = 1117;
-    private const double LocalCanvasLeft = 250;
-    private const double LocalCanvasTop = 56;
+    private const double PreviewCanvasWidth = 760;
+    private const double PreviewCanvasHeight = 190;
+    private const double PreviewPadding = 18;
     private const double MinOverlap = 140;
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    public MainWindowModel()
+    {
+        LoadConfig();
+    }
 
     public string ListenAddress { get; set; } = "0.0.0.0:24800";
 
@@ -248,14 +236,15 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     public string LayoutSummary => $"Server layout: {RouteSummary}";
 
-    public double LocalBoxLeft => LocalCanvasLeft;
-    public double LocalBoxTop => LocalCanvasTop;
-    public double LocalBoxWidth => LocalWidth * LayoutScale;
-    public double LocalBoxHeight => LocalHeight * LayoutScale;
-    public double PeerBoxLeft => LocalCanvasLeft + PeerOffsetX * LayoutScale;
-    public double PeerBoxTop => LocalCanvasTop + PeerOffsetY * LayoutScale;
-    public double PeerBoxWidth => PeerWidth * LayoutScale;
-    public double PeerBoxHeight => PeerHeight * LayoutScale;
+    public double PreviewScale => ComputePreviewScale();
+    public double LocalBoxLeft => PreviewOriginX(-PreviewBoundsLeft());
+    public double LocalBoxTop => PreviewOriginY(-PreviewBoundsTop());
+    public double LocalBoxWidth => LocalWidth * PreviewScale;
+    public double LocalBoxHeight => LocalHeight * PreviewScale;
+    public double PeerBoxLeft => LocalBoxLeft + PeerOffsetX * PreviewScale;
+    public double PeerBoxTop => LocalBoxTop + PeerOffsetY * PreviewScale;
+    public double PeerBoxWidth => PeerWidth * PreviewScale;
+    public double PeerBoxHeight => PeerHeight * PreviewScale;
 
     public double LocalGlowLeft => GlowLeft(true);
     public double LocalGlowTop => GlowTop(true);
@@ -456,6 +445,102 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         Diagnostics = $"Wrote config:\n{ConfigPath}";
     }
 
+    private void LoadConfig()
+    {
+        if (!File.Exists(ConfigPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var root = JsonNode.Parse(File.ReadAllText(ConfigPath))?.AsObject();
+            if (root is null)
+            {
+                return;
+            }
+
+            var server = root["server"] as JsonObject;
+            var client = root["client"] as JsonObject;
+            var input = root["input"] as JsonObject;
+            var layout = root["layout"] as JsonObject;
+
+            var serverName = ReadString(server, "name");
+            var clientName = ReadString(client, "name");
+
+            if (!string.IsNullOrWhiteSpace(serverName))
+            {
+                _serverName = serverName;
+            }
+            if (!string.IsNullOrWhiteSpace(clientName))
+            {
+                _allowedClient = clientName;
+            }
+            if (ReadString(server, "listen") is { Length: > 0 } listen)
+            {
+                ListenAddress = listen;
+            }
+            if (ReadString(client, "server_addr") is { Length: > 0 } serverAddress)
+            {
+                _clientServerAddress = serverAddress;
+            }
+            if (ReadBool(input, "reverse_scroll") is { } reverseScroll)
+            {
+                _reverseScroll = reverseScroll;
+            }
+
+            ApplySavedLayout(layout);
+            Diagnostics = $"Loaded config:\n{ConfigPath}";
+        }
+        catch (Exception ex)
+        {
+            Diagnostics = $"Could not load config:\n{ConfigPath}\n\n{ex.Message}";
+        }
+    }
+
+    private void ApplySavedLayout(JsonObject? layout)
+    {
+        if (layout?["screens"] is not JsonArray screens)
+        {
+            return;
+        }
+
+        var serverOrigin = FindScreenOrigin(screens, ServerName);
+        var clientOrigin = FindScreenOrigin(screens, AllowedClient);
+        if (serverOrigin is { } server && clientOrigin is { } client)
+        {
+            SetPeerOffsetFields(client.X - server.X, client.Y - server.Y);
+            return;
+        }
+
+        if (layout?["links"] is JsonArray links)
+        {
+            foreach (var node in links.OfType<JsonObject>())
+            {
+                if (ReadString(node, "from") != ServerName || ReadString(node, "to") != AllowedClient)
+                {
+                    continue;
+                }
+
+                switch (ReadString(node, "edge"))
+                {
+                    case "left":
+                        SetPeerOffsetFields(-PeerWidth, 0);
+                        return;
+                    case "right":
+                        SetPeerOffsetFields(LocalWidth, 0);
+                        return;
+                    case "top":
+                        SetPeerOffsetFields(0, -PeerHeight);
+                        return;
+                    case "bottom":
+                        SetPeerOffsetFields(0, LocalHeight);
+                        return;
+                }
+            }
+        }
+    }
+
     private void ApplyRuntimeInputSettings()
     {
         SaveConfig();
@@ -551,8 +636,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     public void SetPeerOffset(double x, double y)
     {
-        PeerOffsetX = x;
-        PeerOffsetY = y;
+        SetPeerOffsetFields(x, y);
         OnLayoutChanged();
     }
 
@@ -599,8 +683,17 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     private void OnLayoutChanged()
     {
+        OnPropertyChanged(nameof(PeerOffsetX));
+        OnPropertyChanged(nameof(PeerOffsetY));
+        OnPropertyChanged(nameof(PreviewScale));
+        OnPropertyChanged(nameof(LocalBoxLeft));
+        OnPropertyChanged(nameof(LocalBoxTop));
         OnPropertyChanged(nameof(PeerBoxLeft));
         OnPropertyChanged(nameof(PeerBoxTop));
+        OnPropertyChanged(nameof(LocalBoxWidth));
+        OnPropertyChanged(nameof(LocalBoxHeight));
+        OnPropertyChanged(nameof(PeerBoxWidth));
+        OnPropertyChanged(nameof(PeerBoxHeight));
         OnPropertyChanged(nameof(LayoutArrow));
         OnPropertyChanged(nameof(RouteSummary));
         OnPropertyChanged(nameof(LayoutSummary));
@@ -612,6 +705,104 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(PeerGlowTop));
         OnPropertyChanged(nameof(PeerGlowWidth));
         OnPropertyChanged(nameof(PeerGlowHeight));
+    }
+
+    private void SetPeerOffsetFields(double x, double y)
+    {
+        _peerOffsetX = Math.Clamp(x, -PeerWidth, LocalWidth);
+        _peerOffsetY = Math.Clamp(y, -PeerHeight, LocalHeight);
+    }
+
+    private double ComputePreviewScale()
+    {
+        var boundsWidth = Math.Max(1, PreviewBoundsRight() - PreviewBoundsLeft());
+        var boundsHeight = Math.Max(1, PreviewBoundsBottom() - PreviewBoundsTop());
+        var widthScale = (PreviewCanvasWidth - PreviewPadding * 2) / boundsWidth;
+        var heightScale = (PreviewCanvasHeight - PreviewPadding * 2) / boundsHeight;
+        return Math.Max(MinimumPreviewScale, Math.Min(MaximumPreviewScale, Math.Min(widthScale, heightScale)));
+    }
+
+    private double PreviewOriginX(double localOffset)
+    {
+        var scale = PreviewScale;
+        var boundsWidth = PreviewBoundsRight() - PreviewBoundsLeft();
+        var scaledWidth = boundsWidth * scale;
+        return Math.Max(PreviewPadding, (PreviewCanvasWidth - scaledWidth) / 2) + localOffset * scale;
+    }
+
+    private double PreviewOriginY(double localOffset)
+    {
+        var scale = PreviewScale;
+        var boundsHeight = PreviewBoundsBottom() - PreviewBoundsTop();
+        var scaledHeight = boundsHeight * scale;
+        return Math.Max(PreviewPadding, (PreviewCanvasHeight - scaledHeight) / 2) + localOffset * scale;
+    }
+
+    private double PreviewBoundsLeft() => Math.Min(0, PeerOffsetX);
+    private double PreviewBoundsTop() => Math.Min(0, PeerOffsetY);
+    private double PreviewBoundsRight() => Math.Max(LocalWidth, PeerOffsetX + PeerWidth);
+    private double PreviewBoundsBottom() => Math.Max(LocalHeight, PeerOffsetY + PeerHeight);
+
+    private static string? ReadString(JsonObject? obj, string key)
+    {
+        try
+        {
+            return obj?[key]?.GetValue<string>();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool? ReadBool(JsonObject? obj, string key)
+    {
+        try
+        {
+            return obj?[key]?.GetValue<bool>();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static (double X, double Y)? FindScreenOrigin(JsonArray screens, string screenName)
+    {
+        foreach (var screen in screens.OfType<JsonObject>())
+        {
+            if (ReadString(screen, "name") != screenName)
+            {
+                continue;
+            }
+
+            if (screen["origin"] is JsonObject origin
+                && ReadNumber(origin, "x") is { } x
+                && ReadNumber(origin, "y") is { } y)
+            {
+                return (x, y);
+            }
+        }
+
+        return null;
+    }
+
+    private static double? ReadNumber(JsonObject obj, string key)
+    {
+        var node = obj[key];
+        if (node is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<double>(node.ToJsonString());
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private string LocalToPeerEdge()
