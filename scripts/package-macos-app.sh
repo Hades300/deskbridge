@@ -6,6 +6,34 @@ APP="$ROOT/build/DeskBridge.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
+SIGN_IDENTITY="${DESKBRIDGE_CODESIGN_IDENTITY:-}"
+SIGN_KEYCHAIN="${DESKBRIDGE_CODESIGN_KEYCHAIN:-}"
+
+if [[ -z "$SIGN_IDENTITY" && "${DESKBRIDGE_USE_LOCAL_SIGNING:-0}" == "1" ]]; then
+  eval "$("$ROOT/scripts/ensure-local-macos-signing-identity.sh")"
+fi
+
+codesign_app() {
+  local identifier="$1"
+  local target="$2"
+  local args=(--force)
+
+  if [[ -n "$SIGN_KEYCHAIN" ]]; then
+    args+=(--keychain "$SIGN_KEYCHAIN")
+  fi
+
+  if [[ -n "$SIGN_IDENTITY" ]]; then
+    args+=(--sign "$SIGN_IDENTITY")
+  else
+    args+=(--sign -)
+  fi
+
+  if [[ -n "$identifier" ]]; then
+    args+=(--identifier "$identifier")
+  fi
+
+  codesign "${args[@]}" "$target"
+}
 
 "$ROOT/scripts/build-macos.sh"
 
@@ -44,6 +72,6 @@ plist = """<?xml version="1.0" encoding="UTF-8"?>
 Path("$CONTENTS/Info.plist").write_text(plist)
 PY
 
-codesign --force --sign - --identifier dev.deskbridge.helper "$MACOS/deskbridge"
-codesign --force --sign - "$APP"
+codesign_app "dev.deskbridge.helper" "$MACOS/deskbridge"
+codesign_app "" "$APP"
 echo "$APP"
