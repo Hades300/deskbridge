@@ -18,12 +18,23 @@ final class DeskBridgeModel: ObservableObject {
     private var shouldStayConnected = false
     private var restartScheduled = false
     private let defaults = UserDefaults.standard
+    private let shouldStayConnectedKey = "shouldStayConnected"
 
     init() {
         server = defaults.string(forKey: "server") ?? "192.168.2.5:24800"
         screenName = defaults.string(forKey: "screenName") ?? "mac"
         autoReconnect = defaults.object(forKey: "autoReconnect") as? Bool ?? true
+        shouldStayConnected = defaults.object(forKey: shouldStayConnectedKey) as? Bool ?? false
         startMonitor()
+
+        if shouldStayConnected {
+            status = "Connecting"
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard let self, self.shouldStayConnected else { return }
+                self.launchClient()
+            }
+        }
     }
 
     var normalizedServerAddress: String {
@@ -79,11 +90,13 @@ final class DeskBridgeModel: ObservableObject {
     func connect() {
         save()
         shouldStayConnected = true
+        defaults.set(true, forKey: shouldStayConnectedKey)
         launchClient()
     }
 
     func disconnect() {
         shouldStayConnected = false
+        defaults.set(false, forKey: shouldStayConnectedKey)
         restartScheduled = false
         stopClientProcess()
         connected = false
