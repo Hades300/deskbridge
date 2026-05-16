@@ -69,12 +69,17 @@ final class DeskBridgeModel: ObservableObject {
     func disconnect() {
         shouldStayConnected = false
         restartScheduled = false
+        stopClientProcess()
+        connected = false
+        status = "Idle"
+    }
 
-        if let process, process.isRunning {
-            process.terminate()
-        }
-
-        process = nil
+    func shutdown() {
+        shouldStayConnected = false
+        restartScheduled = false
+        monitor?.invalidate()
+        monitor = nil
+        stopClientProcess()
         connected = false
         status = "Idle"
     }
@@ -105,9 +110,7 @@ final class DeskBridgeModel: ObservableObject {
     }
 
     private func launchClient() {
-        if let process, process.isRunning {
-            process.terminate()
-        }
+        stopClientProcess()
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
@@ -128,9 +131,9 @@ final class DeskBridgeModel: ObservableObject {
             }
         }
 
-        process.terminationHandler = { [weak self] _ in
+        process.terminationHandler = { [weak self] terminatedProcess in
             Task { @MainActor [weak self] in
-                self?.handleTermination()
+                self?.handleTermination(for: terminatedProcess)
             }
         }
 
@@ -162,7 +165,9 @@ final class DeskBridgeModel: ObservableObject {
         }
     }
 
-    private func handleTermination() {
+    private func handleTermination(for terminatedProcess: Process) {
+        guard process === terminatedProcess else { return }
+
         process = nil
         connected = false
 
@@ -202,6 +207,18 @@ final class DeskBridgeModel: ObservableObject {
             status = autoReconnect ? "Restarting" : "Stopped"
             scheduleRestartIfNeeded()
         }
+    }
+
+    private func stopClientProcess() {
+        guard let process else { return }
+
+        process.terminationHandler = nil
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+        }
+
+        self.process = nil
     }
 
     private var supportDirectory: URL {

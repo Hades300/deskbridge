@@ -8,9 +8,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = DeskBridgeModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         installStatusItem()
         showWindow()
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        showWindow()
+        return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.shutdown()
     }
 
     private func installStatusItem() {
@@ -19,14 +31,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.toolTip = "DeskBridge"
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Open DeskBridge", action: #selector(openWindow), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Connect", action: #selector(connect), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Disconnect", action: #selector(disconnect), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Diagnose", action: #selector(diagnose), keyEquivalent: ""))
+        menu.addItem(menuItem("Open DeskBridge", action: #selector(openWindow)))
+        menu.addItem(menuItem("Connect", action: #selector(connect)))
+        menu.addItem(menuItem("Disconnect", action: #selector(disconnect)))
+        menu.addItem(menuItem("Diagnose", action: #selector(diagnose)))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(menuItem("Quit", action: #selector(quit), keyEquivalent: "q"))
         item.menu = menu
         statusItem = item
+    }
+
+    private func menuItem(
+        _ title: String,
+        action: Selector,
+        keyEquivalent: String = ""
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        item.target = self
+        return item
     }
 
     private func showWindow() {
@@ -41,12 +63,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.title = "DeskBridge"
             window.contentView = NSHostingView(rootView: view)
             window.minSize = NSSize(width: 560, height: 500)
+            window.isReleasedWhenClosed = false
+            window.tabbingMode = .disallowed
             window.center()
             self.window = window
         }
 
         window?.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func openWindow() {
@@ -67,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
-        model.disconnect()
+        model.shutdown()
         NSApp.terminate(nil)
     }
 }
