@@ -187,7 +187,8 @@ fn map_direction(state: KeyState) -> enigo::Direction {
 fn map_key(key: &str) -> Option<enigo::Key> {
     let key = key.trim();
     if key.chars().count() == 1 {
-        return key.chars().next().map(enigo::Key::Unicode);
+        let ch = key.chars().next()?;
+        return Some(physical_ascii_key(ch).unwrap_or(enigo::Key::Unicode(ch)));
     }
 
     Some(match key.to_ascii_lowercase().as_str() {
@@ -231,6 +232,16 @@ fn map_key(key: &str) -> Option<enigo::Key> {
         "right_meta" | "right_command" | "right_cmd" | "right_win" | "right_windows" => {
             right_meta_key()
         }
+        "digit0" => physical_digit_key('0')?,
+        "digit1" => physical_digit_key('1')?,
+        "digit2" => physical_digit_key('2')?,
+        "digit3" => physical_digit_key('3')?,
+        "digit4" => physical_digit_key('4')?,
+        "digit5" => physical_digit_key('5')?,
+        "digit6" => physical_digit_key('6')?,
+        "digit7" => physical_digit_key('7')?,
+        "digit8" => physical_digit_key('8')?,
+        "digit9" => physical_digit_key('9')?,
         "minus" => physical_minus_key(),
         "equal" => physical_equal_key(),
         "comma" => physical_comma_key(),
@@ -269,6 +280,66 @@ fn map_key(key: &str) -> Option<enigo::Key> {
         "up" | "uparrow" => enigo::Key::UpArrow,
         _ => return None,
     })
+}
+
+fn physical_ascii_key(ch: char) -> Option<enigo::Key> {
+    if ch.is_ascii_digit() {
+        return physical_digit_key(ch);
+    }
+    if ch.is_ascii_alphabetic() {
+        return physical_letter_key(ch);
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn physical_digit_key(ch: char) -> Option<enigo::Key> {
+    Some(enigo::Key::Other(match ch {
+        '1' => 18,
+        '2' => 19,
+        '3' => 20,
+        '4' => 21,
+        '5' => 23,
+        '6' => 22,
+        '7' => 26,
+        '8' => 28,
+        '9' => 25,
+        '0' => 29,
+        _ => return None,
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn physical_letter_key(ch: char) -> Option<enigo::Key> {
+    Some(enigo::Key::Other(match ch.to_ascii_lowercase() {
+        'a' => 0,
+        's' => 1,
+        'd' => 2,
+        'f' => 3,
+        'h' => 4,
+        'g' => 5,
+        'z' => 6,
+        'x' => 7,
+        'c' => 8,
+        'v' => 9,
+        'b' => 11,
+        'q' => 12,
+        'w' => 13,
+        'e' => 14,
+        'r' => 15,
+        'y' => 16,
+        't' => 17,
+        'o' => 31,
+        'u' => 32,
+        'i' => 34,
+        'p' => 35,
+        'l' => 37,
+        'j' => 38,
+        'k' => 40,
+        'n' => 45,
+        'm' => 46,
+        _ => return None,
+    }))
 }
 
 #[cfg(target_os = "macos")]
@@ -347,6 +418,56 @@ fn map_print_screen_key() -> Option<enigo::Key> {
 }
 
 #[cfg(target_os = "windows")]
+fn physical_digit_key(ch: char) -> Option<enigo::Key> {
+    Some(match ch {
+        '0' => enigo::Key::Num0,
+        '1' => enigo::Key::Num1,
+        '2' => enigo::Key::Num2,
+        '3' => enigo::Key::Num3,
+        '4' => enigo::Key::Num4,
+        '5' => enigo::Key::Num5,
+        '6' => enigo::Key::Num6,
+        '7' => enigo::Key::Num7,
+        '8' => enigo::Key::Num8,
+        '9' => enigo::Key::Num9,
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn physical_letter_key(ch: char) -> Option<enigo::Key> {
+    Some(match ch.to_ascii_lowercase() {
+        'a' => enigo::Key::A,
+        'b' => enigo::Key::B,
+        'c' => enigo::Key::C,
+        'd' => enigo::Key::D,
+        'e' => enigo::Key::E,
+        'f' => enigo::Key::F,
+        'g' => enigo::Key::G,
+        'h' => enigo::Key::H,
+        'i' => enigo::Key::I,
+        'j' => enigo::Key::J,
+        'k' => enigo::Key::K,
+        'l' => enigo::Key::L,
+        'm' => enigo::Key::M,
+        'n' => enigo::Key::N,
+        'o' => enigo::Key::O,
+        'p' => enigo::Key::P,
+        'q' => enigo::Key::Q,
+        'r' => enigo::Key::R,
+        's' => enigo::Key::S,
+        't' => enigo::Key::T,
+        'u' => enigo::Key::U,
+        'v' => enigo::Key::V,
+        'w' => enigo::Key::W,
+        'x' => enigo::Key::X,
+        'y' => enigo::Key::Y,
+        'z' => enigo::Key::Z,
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "windows")]
 fn physical_minus_key() -> enigo::Key {
     enigo::Key::OEMMinus
 }
@@ -419,6 +540,17 @@ fn map_pause_key() -> Option<enigo::Key> {
 #[cfg(target_os = "windows")]
 fn map_print_screen_key() -> Option<enigo::Key> {
     Some(enigo::Key::PrintScr)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn physical_digit_key(ch: char) -> Option<enigo::Key> {
+    ch.is_ascii_digit().then_some(enigo::Key::Unicode(ch))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn physical_letter_key(ch: char) -> Option<enigo::Key> {
+    ch.is_ascii_alphabetic()
+        .then_some(enigo::Key::Unicode(ch.to_ascii_lowercase()))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -515,5 +647,19 @@ mod tests {
         assert_eq!(map_key("equal"), Some(enigo::Key::Other(24)));
         assert_eq!(map_key("minus"), Some(enigo::Key::Other(27)));
         assert_eq!(map_key("slash"), Some(enigo::Key::Other(44)));
+        assert_eq!(map_key("1"), Some(enigo::Key::Other(18)));
+        assert_eq!(map_key("4"), Some(enigo::Key::Other(21)));
+        assert_eq!(map_key("digit1"), Some(enigo::Key::Other(18)));
+        assert_eq!(map_key("a"), Some(enigo::Key::Other(0)));
+        assert_eq!(map_key("A"), Some(enigo::Key::Other(0)));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn maps_ascii_keys_to_windows_physical_keys() {
+        assert_eq!(map_key("1"), Some(enigo::Key::Num1));
+        assert_eq!(map_key("digit1"), Some(enigo::Key::Num1));
+        assert_eq!(map_key("a"), Some(enigo::Key::A));
+        assert_eq!(map_key("A"), Some(enigo::Key::A));
     }
 }

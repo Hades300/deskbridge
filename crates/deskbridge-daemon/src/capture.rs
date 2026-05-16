@@ -43,8 +43,15 @@ pub mod windows {
         ptr::{null, null_mut},
         thread,
     };
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows_sys::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetAwarenessFromDpiAwarenessContext,
+        GetDpiFromDpiAwarenessContext, GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
+    };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         VK_ADD, VK_APPS, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_DECIMAL, VK_DELETE, VK_DIVIDE,
         VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9,
@@ -63,16 +70,18 @@ pub mod windows {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-        GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
-        MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN,
-        SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetWindowsHookExW,
-        TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN,
-        WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
+        GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+        LLMHF_INJECTED, MONITORINFOF_PRIMARY, MSG, MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN,
+        SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+        SetProcessDPIAware, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+        WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
     };
 
     static CAPTURE_TX: OnceLock<Mutex<CaptureSender>> = OnceLock::new();
     static CAPTURE_BOUNDS: OnceLock<ScreenBounds> = OnceLock::new();
+    static DPI_AWARENESS_CONFIGURED: OnceLock<()> = OnceLock::new();
     static SUPPRESS_LOCAL_INPUT: AtomicBool = AtomicBool::new(false);
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +100,7 @@ pub mod windows {
 
     impl WindowsHookCapture {
         pub fn install(sender: CaptureSender) -> Result<Self> {
+            configure_process_dpi_awareness();
             CAPTURE_TX
                 .set(Mutex::new(sender))
                 .map_err(|_| anyhow!("windows capture hook already installed"))?;
@@ -173,20 +183,69 @@ pub mod windows {
         SUPPRESS_LOCAL_INPUT.store(suppressed, Ordering::SeqCst);
     }
 
+    pub fn configure_process_dpi_awareness() {
+        let _ = DPI_AWARENESS_CONFIGURED.get_or_init(|| unsafe {
+            if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0 {
+                let _ = SetProcessDPIAware();
+            }
+        });
+    }
+
     pub fn primary_screen_size() -> Option<(u32, u32)> {
         let bounds = platform_screen_bounds();
         Some((bounds.width, bounds.height))
     }
 
+    pub fn screen_debug_lines() -> Vec<String> {
+        configure_process_dpi_awareness();
+        let primary = primary_screen_bounds();
+        let virtual_bounds = virtual_screen_bounds();
+        let platform = platform_screen_bounds();
+        let capture = CAPTURE_BOUNDS.get().copied();
+        let mut lines = vec![
+            format!("windows_dpi {}", dpi_awareness_summary()),
+            format!(
+                "windows_screen primary={} virtual={} platform={}",
+                describe_bounds(primary),
+                virtual_bounds
+                    .map(describe_bounds)
+                    .unwrap_or_else(|| "unavailable".to_string()),
+                describe_bounds(platform),
+            ),
+            format!(
+                "windows_capture_bounds={}",
+                capture
+                    .map(describe_bounds)
+                    .unwrap_or_else(|| "not_initialized".to_string())
+            ),
+        ];
+
+        let monitors = monitor_bounds();
+        lines.push(format!("windows_monitors={}", monitors.len()));
+        for (index, monitor) in monitors.iter().enumerate() {
+            lines.push(format!(
+                "windows_monitor[{index}] bounds={} work={} primary={}",
+                describe_bounds(monitor.bounds),
+                describe_bounds(monitor.work),
+                monitor.primary
+            ));
+        }
+
+        lines
+    }
+
     fn platform_screen_bounds() -> ScreenBounds {
+        configure_process_dpi_awareness();
         if let Some(bounds) = virtual_screen_bounds() {
             return bounds;
         }
 
-        let width =
-            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CXSCREEN) };
-        let height =
-            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CYSCREEN) };
+        primary_screen_bounds()
+    }
+
+    fn primary_screen_bounds() -> ScreenBounds {
+        let width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
         ScreenBounds {
             origin_x: 0,
             origin_y: 0,
@@ -196,18 +255,10 @@ pub mod windows {
     }
 
     fn virtual_screen_bounds() -> Option<ScreenBounds> {
-        let origin_x = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_XVIRTUALSCREEN)
-        };
-        let origin_y = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_YVIRTUALSCREEN)
-        };
-        let width = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CXVIRTUALSCREEN)
-        };
-        let height = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CYVIRTUALSCREEN)
-        };
+        let origin_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+        let origin_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+        let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+        let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
 
         (width > 0 && height > 0).then_some(ScreenBounds {
             origin_x,
@@ -215,6 +266,72 @@ pub mod windows {
             width: width as u32,
             height: height as u32,
         })
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct MonitorBounds {
+        bounds: ScreenBounds,
+        work: ScreenBounds,
+        primary: bool,
+    }
+
+    fn monitor_bounds() -> Vec<MonitorBounds> {
+        let mut monitors = Vec::<MonitorBounds>::new();
+        let ok = unsafe {
+            EnumDisplayMonitors(
+                null_mut(),
+                null(),
+                Some(enum_monitor_proc),
+                &mut monitors as *mut _ as LPARAM,
+            )
+        };
+        if ok == 0 { Vec::new() } else { monitors }
+    }
+
+    unsafe extern "system" fn enum_monitor_proc(
+        hmonitor: HMONITOR,
+        _hdc: HDC,
+        _rect: *mut RECT,
+        data: LPARAM,
+    ) -> windows_sys::core::BOOL {
+        let monitors = unsafe { &mut *(data as *mut Vec<MonitorBounds>) };
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetMonitorInfoW(hmonitor, &mut info) } != 0 {
+            monitors.push(MonitorBounds {
+                bounds: bounds_from_rect(info.rcMonitor),
+                work: bounds_from_rect(info.rcWork),
+                primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+            });
+        }
+        1
+    }
+
+    fn bounds_from_rect(rect: RECT) -> ScreenBounds {
+        ScreenBounds {
+            origin_x: rect.left,
+            origin_y: rect.top,
+            width: (rect.right - rect.left).max(1) as u32,
+            height: (rect.bottom - rect.top).max(1) as u32,
+        }
+    }
+
+    fn describe_bounds(bounds: ScreenBounds) -> String {
+        let max_x = bounds.origin_x + bounds.width.saturating_sub(1) as i32;
+        let max_y = bounds.origin_y + bounds.height.saturating_sub(1) as i32;
+        format!(
+            "origin=({}, {}) size={}x{} max=({}, {})",
+            bounds.origin_x, bounds.origin_y, bounds.width, bounds.height, max_x, max_y
+        )
+    }
+
+    fn dpi_awareness_summary() -> String {
+        let context = unsafe { GetThreadDpiAwarenessContext() };
+        let awareness = unsafe { GetAwarenessFromDpiAwarenessContext(context) };
+        let dpi = unsafe { GetDpiFromDpiAwarenessContext(context) };
+        format!("awareness={awareness} dpi={dpi}")
     }
 
     fn create_raw_input_window() -> Result<HWND> {
@@ -543,6 +660,21 @@ pub mod windows {
             assert_eq!(normalize_point(-1920, -100, bounds), (0, 0));
             assert_eq!(normalize_point(-1, 540, bounds), (1919, 640));
             assert_eq!(normalize_point(4000, 2000, bounds), (3839, 1179));
+        }
+
+        #[test]
+        fn describes_screen_bounds_for_debugging() {
+            let bounds = ScreenBounds {
+                origin_x: 10,
+                origin_y: 20,
+                width: 1920,
+                height: 1080,
+            };
+
+            assert_eq!(
+                describe_bounds(bounds),
+                "origin=(10, 20) size=1920x1080 max=(1929, 1099)"
+            );
         }
 
         #[test]

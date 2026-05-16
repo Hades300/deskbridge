@@ -876,6 +876,7 @@ async fn build_server_logs_response(
     logs.push(format!("debug_capture_log={}", options.debug_capture_log));
     logs.push(format!("demo_events={}", options.demo_events));
     logs.push(format!("heartbeat_ms={}", options.heartbeat_ms));
+    logs.extend(platform_screen_debug_lines());
 
     let sessions = sessions.lock().await;
     if sessions.is_empty() {
@@ -1207,6 +1208,7 @@ fn build_route_status_logs(
                 .unwrap_or_else(|| "unavailable".to_string())
         ),
     ];
+    logs.extend(platform_screen_debug_lines());
 
     for screen in &options.layout.screens {
         logs.push(format!(
@@ -1258,6 +1260,18 @@ fn build_route_status_logs(
     }
 
     logs
+}
+
+fn platform_screen_debug_lines() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::capture::windows::screen_debug_lines()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
+    }
 }
 
 async fn forward_debug_request(
