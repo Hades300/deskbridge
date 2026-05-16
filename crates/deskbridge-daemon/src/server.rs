@@ -1,9 +1,10 @@
 use crate::capture::CaptureEvent;
 use anyhow::{Context, Result};
 use deskbridge_core::{
-    ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest,
-    DebugResponse, Edge, FrameError, Hello, InputEvent, InputPacket, InputRouter, Layout, Message,
-    REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome, read_frame, write_frame,
+    CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
+    DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello, InputEvent, InputPacket,
+    InputRouter, Layout, Message, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome,
+    read_frame, write_frame,
 };
 use std::{
     collections::HashMap,
@@ -373,6 +374,7 @@ struct ClientSessionRuntime<'a> {
     route_debug_rx: &'a mut mpsc::UnboundedReceiver<RouteDebugEnvelope>,
     capture_tx: crate::capture::CaptureSender,
     server_log: ServerDebugLog,
+    client_clipboard_supported: bool,
 }
 
 fn new_server_debug_log() -> ServerDebugLog {
@@ -582,6 +584,11 @@ async fn handle_client(
         server_name: options.name.clone(),
         heartbeat_interval_ms: options.heartbeat_ms.max(DEFAULT_HEARTBEAT_MS),
         layout_revision: 1,
+        capabilities: server_capabilities(&options),
+        clipboard_protocol: options
+            .clipboard
+            .enabled
+            .then_some(CLIPBOARD_PROTOCOL_VERSION),
     });
 
     if !hello.is_input_client() {
@@ -666,6 +673,8 @@ async fn handle_client(
     );
 
     write_frame(&mut stream, &welcome).await?;
+    let client_clipboard_supported = hello.capabilities.contains(&Capability::Clipboard)
+        && hello.clipboard_protocol == Some(CLIPBOARD_PROTOCOL_VERSION);
 
     let result = run_client_session(
         stream,
@@ -680,6 +689,7 @@ async fn handle_client(
             route_debug_rx: &mut route_debug_rx,
             capture_tx,
             server_log: server_log.clone(),
+            client_clipboard_supported,
         },
     )
     .await;
@@ -716,6 +726,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
         route_debug_rx,
         capture_tx,
         server_log,
+        client_clipboard_supported,
     } = runtime;
     let mut ticker = time::interval(Duration::from_secs(5));
     let (reader, mut writer) = stream.into_split();
@@ -731,7 +742,11 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut capture_probe_seq_index = HashMap::<u64, Uuid>::new();
     let mut perf = ServerPerfMetrics::new();
     let mut last_unrouted_capture_log_ms = 0_u128;
-    let clipboard_runtime = crate::clipboard::ClipboardRuntime::new(options.clipboard.clone());
+    let mut clipboard_options = options.clipboard.clone();
+    if !client_clipboard_supported {
+        clipboard_options.enabled = false;
+    }
+    let clipboard_runtime = crate::clipboard::ClipboardRuntime::new(clipboard_options);
     let mut clipboard_rx = clipboard_runtime
         .as_ref()
         .map(crate::clipboard::ClipboardRuntime::spawn_watcher);
@@ -1061,6 +1076,18 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
             }
         }
     }
+}
+
+fn server_capabilities(options: &ServerOptions) -> Vec<Capability> {
+    let mut capabilities = vec![
+        Capability::InputCapture,
+        Capability::Diagnostics,
+        Capability::LayoutV1,
+    ];
+    if options.clipboard.enabled {
+        capabilities.push(Capability::Clipboard);
+    }
+    capabilities
 }
 
 async fn recv_clipboard(

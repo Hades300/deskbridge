@@ -1,9 +1,9 @@
 use crate::input::{EnigoSink, InputSink, LogSink};
 use anyhow::{Context, Result, anyhow};
 use deskbridge_core::{
-    ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest,
-    DebugResponse, DisplaySnapshot, EventAck, FrameError, Hello, InputEvent, InputPacket, Message,
-    Ping, Pong, REPLACED_SESSION_REASON, read_frame, write_frame,
+    CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
+    DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, EventAck, FrameError, Hello,
+    InputEvent, InputPacket, Message, Ping, Pong, REPLACED_SESSION_REASON, read_frame, write_frame,
 };
 use std::collections::VecDeque;
 use std::{
@@ -74,14 +74,16 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     write_frame(&mut stream, &Message::Hello(hello)).await?;
 
     let welcome = read_frame(&mut stream).await?;
-    let heartbeat_ms = match welcome {
+    let (heartbeat_ms, server_clipboard_supported) = match welcome {
         Message::Welcome(welcome) => {
+            let server_clipboard_supported = welcome.capabilities.contains(&Capability::Clipboard)
+                && welcome.clipboard_protocol == Some(CLIPBOARD_PROTOCOL_VERSION);
             info!(
                 server = welcome.server_name,
                 session = %welcome.session_id,
                 "connected"
             );
-            welcome.heartbeat_interval_ms
+            (welcome.heartbeat_interval_ms, server_clipboard_supported)
         }
         Message::Status(status) => {
             return Err(anyhow!("server rejected client: {}", status.message));
@@ -94,7 +96,11 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     } else {
         Box::new(EnigoSink::new()?)
     };
-    let clipboard_runtime = crate::clipboard::ClipboardRuntime::new(options.clipboard.clone());
+    let mut clipboard_options = options.clipboard.clone();
+    if !server_clipboard_supported {
+        clipboard_options.enabled = false;
+    }
+    let clipboard_runtime = crate::clipboard::ClipboardRuntime::new(clipboard_options);
     let mut clipboard_rx = clipboard_runtime
         .as_ref()
         .map(crate::clipboard::ClipboardRuntime::spawn_watcher);
@@ -116,6 +122,10 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     let mut last_rx = Instant::now();
     let mut debug_state = ClientDebugState::new(options);
     debug_state.push(format!("connected to server {}", options.server));
+    if options.clipboard.enabled && !server_clipboard_supported {
+        debug_state
+            .push("clipboard disabled: server did not negotiate clipboard protocol".to_string());
+    }
 
     loop {
         tokio::select! {
@@ -624,6 +634,8 @@ mod tests {
             server_name: "windows".to_string(),
             heartbeat_interval_ms: 100,
             layout_revision: 1,
+            capabilities: vec![Capability::Clipboard],
+            clipboard_protocol: Some(CLIPBOARD_PROTOCOL_VERSION),
         })
     }
 }

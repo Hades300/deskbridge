@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u16 = 1;
+pub const CLIPBOARD_PROTOCOL_VERSION: u16 = 1;
 pub const DEFAULT_HEARTBEAT_MS: u64 = 2_000;
 pub const REPLACED_SESSION_REASON: &str = "replaced by a newer session for the same screen";
 
@@ -47,6 +48,8 @@ pub struct Hello {
     pub platform: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard_protocol: Option<u16>,
 }
 
 impl Hello {
@@ -67,6 +70,7 @@ impl Hello {
             app_version: None,
             platform: None,
             build_commit: None,
+            clipboard_protocol: Some(CLIPBOARD_PROTOCOL_VERSION),
         }
     }
 
@@ -82,6 +86,7 @@ impl Hello {
             app_version: None,
             platform: None,
             build_commit: None,
+            clipboard_protocol: None,
         }
     }
 
@@ -102,6 +107,7 @@ impl Hello {
             app_version: None,
             platform: None,
             build_commit: None,
+            clipboard_protocol: Some(CLIPBOARD_PROTOCOL_VERSION),
         }
     }
 
@@ -133,6 +139,10 @@ pub struct Welcome {
     pub server_name: String,
     pub heartbeat_interval_ms: u64,
     pub layout_revision: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<Capability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard_protocol: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -381,6 +391,32 @@ mod tests {
                 height: 982,
             })
         );
+    }
+
+    #[test]
+    fn hello_advertises_clipboard_subprotocol_only_for_real_peers() {
+        assert_eq!(
+            Hello::client("mac").clipboard_protocol,
+            Some(CLIPBOARD_PROTOCOL_VERSION)
+        );
+        assert_eq!(
+            Hello::server("windows").clipboard_protocol,
+            Some(CLIPBOARD_PROTOCOL_VERSION)
+        );
+        assert_eq!(Hello::diagnostic("mac").clipboard_protocol, None);
+    }
+
+    #[test]
+    fn welcome_defaults_missing_capabilities_for_older_servers() {
+        let json = r#"{
+            "session_id":"00000000-0000-0000-0000-000000000001",
+            "server_name":"windows",
+            "heartbeat_interval_ms":2000,
+            "layout_revision":1
+        }"#;
+        let decoded: Welcome = serde_json::from_str(json).unwrap();
+        assert!(decoded.capabilities.is_empty());
+        assert_eq!(decoded.clipboard_protocol, None);
     }
 
     #[test]
