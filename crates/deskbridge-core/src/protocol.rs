@@ -186,6 +186,16 @@ pub enum DebugCommand {
         dy: i32,
     },
     RouteStatus,
+    CaptureProbe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge: Option<Edge>,
+        #[serde(default = "default_route_probe_steps")]
+        steps: u32,
+        #[serde(default = "default_route_probe_dx")]
+        dx: i32,
+        #[serde(default)]
+        dy: i32,
+    },
 }
 
 fn default_route_probe_steps() -> u32 {
@@ -328,6 +338,22 @@ mod tests {
         let request = Message::DebugRequest(DebugRequest {
             request_id: Uuid::new_v4(),
             command: DebugCommand::RouteStatus,
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn debug_capture_probe_round_trips() {
+        let request = Message::DebugRequest(DebugRequest {
+            request_id: Uuid::new_v4(),
+            command: DebugCommand::CaptureProbe {
+                edge: Some(Edge::Right),
+                steps: 2,
+                dx: 40,
+                dy: -1,
+            },
         });
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: Message = serde_json::from_str(&encoded).unwrap();

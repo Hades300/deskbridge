@@ -158,6 +158,17 @@ enum DebugCliCommand {
     },
     /// Read the server-side route layout currently used by the active target session.
     RouteStatus,
+    /// Inject synthetic capture events into the server capture path and wait for client acks.
+    CaptureProbe {
+        #[arg(long, value_parser = parse_edge)]
+        edge: Option<Edge>,
+        #[arg(long, default_value_t = 3)]
+        steps: u32,
+        #[arg(long, default_value_t = 80, allow_hyphen_values = true)]
+        dx: i32,
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        dy: i32,
+    },
 }
 
 #[tokio::main]
@@ -381,6 +392,17 @@ fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
             dy,
         },
         DebugCliCommand::RouteStatus => DebugCommand::RouteStatus,
+        DebugCliCommand::CaptureProbe {
+            edge,
+            steps,
+            dx,
+            dy,
+        } => DebugCommand::CaptureProbe {
+            edge,
+            steps,
+            dx,
+            dy,
+        },
     }
 }
 

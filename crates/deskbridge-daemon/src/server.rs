@@ -54,11 +54,22 @@ struct RouteDebugEnvelope {
 #[derive(Debug, Clone, Copy)]
 enum RouteDebugCommand {
     Probe(RouteProbeOptions),
+    CaptureProbe(RouteProbeOptions),
     Status,
 }
 
 #[derive(Debug)]
 struct PendingRouteProbe {
+    remaining_seqs: HashSet<u64>,
+    logs: Vec<String>,
+    response_tx: oneshot::Sender<DebugResponse>,
+}
+
+#[derive(Debug)]
+struct PendingCaptureProbe {
+    expected_capture_events: usize,
+    processed_capture_events: usize,
+    routed_events: usize,
     remaining_seqs: HashSet<u64>,
     logs: Vec<String>,
     response_tx: oneshot::Sender<DebugResponse>,
@@ -287,6 +298,8 @@ async fn run_client_session(
     let mut pending_debug = HashMap::<Uuid, oneshot::Sender<DebugResponse>>::new();
     let mut pending_route_probes = HashMap::<Uuid, PendingRouteProbe>::new();
     let mut route_probe_seq_index = HashMap::<u64, Uuid>::new();
+    let mut pending_capture_probes = HashMap::<Uuid, PendingCaptureProbe>::new();
+    let mut capture_probe_seq_index = HashMap::<u64, Uuid>::new();
 
     loop {
         tokio::select! {
@@ -305,15 +318,53 @@ async fn run_client_session(
                     event,
                 })).await?;
             }
-            event = capture_rx.recv(), if options.capture => {
-                if let Ok(event) = event
-                    && let Some(event) = route_capture_event(&mut demo_router, event, client_name)
-                {
-                    seq += 1;
-                    write_frame(&mut stream, &Message::Input(InputPacket {
-                        seq,
-                        event,
-                    })).await?;
+            event = capture_rx.recv() => {
+                if let Ok(event) = event {
+                    let probe_id = capture_probe_id(&event);
+                    let capture_event = capture_event_payload(event);
+                    let routed = route_capture_event(&mut demo_router, capture_event, client_name);
+
+                    if let Some(request_id) = probe_id
+                        && let Some(probe) = pending_capture_probes.get_mut(&request_id)
+                    {
+                        probe.processed_capture_events += 1;
+                        match &routed {
+                            Some(event) => probe.logs.push(format!(
+                                "capture event {} routed target={} {}",
+                                probe.processed_capture_events,
+                                client_name,
+                                describe_input_event(event)
+                            )),
+                            None => probe.logs.push(format!(
+                                "capture event {} did not route to target {}",
+                                probe.processed_capture_events,
+                                client_name
+                            )),
+                        }
+                    }
+
+                    if let Some(event) = routed {
+                        seq += 1;
+                        write_frame(&mut stream, &Message::Input(InputPacket {
+                            seq,
+                            event,
+                        })).await?;
+                        if let Some(request_id) = probe_id
+                            && let Some(probe) = pending_capture_probes.get_mut(&request_id)
+                        {
+                            capture_probe_seq_index.insert(seq, request_id);
+                            probe.remaining_seqs.insert(seq);
+                            probe.routed_events += 1;
+                        }
+                    }
+
+                    if let Some(request_id) = probe_id {
+                        maybe_finish_capture_probe(
+                            request_id,
+                            &mut pending_capture_probes,
+                            &mut capture_probe_seq_index,
+                        );
+                    }
                 }
             }
             _ = shutdown_rx.recv() => {
@@ -334,54 +385,103 @@ async fn run_client_session(
                 pending_debug.insert(request_id, debug.response_tx);
             }
             Some(route_debug) = route_debug_rx.recv() => {
-                let RouteDebugCommand::Probe(probe_options) = route_debug.command else {
-                    let _ = route_debug.response_tx.send(DebugResponse {
-                        request_id: route_debug.request_id,
-                        ok: true,
-                        message: "route status read".to_string(),
-                        display: None,
-                        logs: build_route_status_logs(options, client_name, &demo_router, route_debug.request_id),
-                    });
-                    continue;
-                };
-
-                let (events, logs) = match build_route_probe_events(
-                    options,
-                    client_name,
-                    probe_options,
-                    route_debug.request_id,
-                ) {
-                    Ok(probe_events) => probe_events,
-                    Err(err) => {
-                        let _ = route_debug.response_tx.send(debug_error_response(
-                            route_debug.request_id,
-                            format!("{err:#}"),
-                        ));
+                match route_debug.command {
+                    RouteDebugCommand::Status => {
+                        let _ = route_debug.response_tx.send(DebugResponse {
+                            request_id: route_debug.request_id,
+                            ok: true,
+                            message: "route status read".to_string(),
+                            display: None,
+                            logs: build_route_status_logs(options, client_name, &demo_router, route_debug.request_id),
+                        });
                         continue;
                     }
-                };
-                let mut seqs = HashSet::new();
-                for event in events {
-                    seq += 1;
-                    write_frame(&mut stream, &Message::Input(InputPacket {
-                        seq,
-                        event,
-                    })).await?;
-                    route_probe_seq_index.insert(seq, route_debug.request_id);
-                    seqs.insert(seq);
-                }
+                    RouteDebugCommand::Probe(probe_options) => {
+                        let (events, logs) = match build_route_probe_events(
+                            options,
+                            client_name,
+                            probe_options,
+                            route_debug.request_id,
+                        ) {
+                            Ok(probe_events) => probe_events,
+                            Err(err) => {
+                                let _ = route_debug.response_tx.send(debug_error_response(
+                                    route_debug.request_id,
+                                    format!("{err:#}"),
+                                ));
+                                continue;
+                            }
+                        };
+                        let mut seqs = HashSet::new();
+                        for event in events {
+                            seq += 1;
+                            write_frame(&mut stream, &Message::Input(InputPacket {
+                                seq,
+                                event,
+                            })).await?;
+                            route_probe_seq_index.insert(seq, route_debug.request_id);
+                            seqs.insert(seq);
+                        }
 
-                if seqs.is_empty() {
-                    let _ = route_debug.response_tx.send(debug_error_response(
-                        route_debug.request_id,
-                        "route probe did not produce input events".to_string(),
-                    ));
-                } else {
-                    pending_route_probes.insert(route_debug.request_id, PendingRouteProbe {
-                        remaining_seqs: seqs,
-                        logs,
-                        response_tx: route_debug.response_tx,
-                    });
+                        if seqs.is_empty() {
+                            let _ = route_debug.response_tx.send(debug_error_response(
+                                route_debug.request_id,
+                                "route probe did not produce input events".to_string(),
+                            ));
+                        } else {
+                            pending_route_probes.insert(route_debug.request_id, PendingRouteProbe {
+                                remaining_seqs: seqs,
+                                logs,
+                                response_tx: route_debug.response_tx,
+                            });
+                        }
+                    }
+                    RouteDebugCommand::CaptureProbe(probe_options) => {
+                        let (events, logs) = match build_capture_probe_events(
+                            options,
+                            client_name,
+                            probe_options,
+                            route_debug.request_id,
+                        ) {
+                            Ok(probe_events) => probe_events,
+                            Err(err) => {
+                                let _ = route_debug.response_tx.send(debug_error_response(
+                                    route_debug.request_id,
+                                    format!("{err:#}"),
+                                ));
+                                continue;
+                            }
+                        };
+
+                        if events.is_empty() {
+                            let _ = route_debug.response_tx.send(debug_error_response(
+                                route_debug.request_id,
+                                "capture probe did not produce capture events".to_string(),
+                            ));
+                            continue;
+                        }
+
+                        pending_capture_probes.insert(route_debug.request_id, PendingCaptureProbe {
+                            expected_capture_events: events.len(),
+                            processed_capture_events: 0,
+                            routed_events: 0,
+                            remaining_seqs: HashSet::new(),
+                            logs,
+                            response_tx: route_debug.response_tx,
+                        });
+
+                        for event in events {
+                            if let Err(err) = capture_tx.send(event) {
+                                if let Some(probe) = pending_capture_probes.remove(&route_debug.request_id) {
+                                    let _ = probe.response_tx.send(debug_error_response(
+                                        route_debug.request_id,
+                                        format!("failed to inject synthetic capture event: {err}"),
+                                    ));
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             msg = read_frame(&mut stream) => {
@@ -424,6 +524,17 @@ async fn run_client_session(
                                 });
                             }
                         }
+                        if let Some(request_id) = capture_probe_seq_index.remove(&ack.seq) {
+                            if let Some(probe) = pending_capture_probes.get_mut(&request_id) {
+                                probe.remaining_seqs.remove(&ack.seq);
+                                probe.logs.push(format!("ack seq={}", ack.seq));
+                            }
+                            maybe_finish_capture_probe(
+                                request_id,
+                                &mut pending_capture_probes,
+                                &mut capture_probe_seq_index,
+                            );
+                        }
                     }
                     Message::DebugResponse(response) => {
                         if let Some(response_tx) = pending_debug.remove(&response.request_id) {
@@ -462,6 +573,26 @@ async fn handle_diagnostic_session(
                     sessions,
                     request.request_id,
                     RouteDebugCommand::Probe(RouteProbeOptions {
+                        edge,
+                        steps,
+                        dx,
+                        dy,
+                    }),
+                )
+                .await
+            }
+            DebugCommand::CaptureProbe {
+                edge,
+                steps,
+                dx,
+                dy,
+            } => {
+                forward_route_debug_request(
+                    stream,
+                    target_screen,
+                    sessions,
+                    request.request_id,
+                    RouteDebugCommand::CaptureProbe(RouteProbeOptions {
                         edge,
                         steps,
                         dx,
@@ -660,6 +791,122 @@ fn build_route_probe_events(
     }
 
     Ok((events, logs))
+}
+
+fn build_capture_probe_events(
+    options: &ServerOptions,
+    target_screen: &str,
+    probe_options: RouteProbeOptions,
+    request_id: Uuid,
+) -> Result<(Vec<CaptureEvent>, Vec<String>)> {
+    let edge = match probe_options.edge {
+        Some(edge) => edge,
+        None => options
+            .layout
+            .links
+            .iter()
+            .find(|link| link.from == options.name && link.to == target_screen)
+            .map(|link| link.edge)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "layout has no link from '{}' to '{}'",
+                    options.name,
+                    target_screen
+                )
+            })?,
+    };
+    let (x, y) = sample_point_on_edge(&options.layout, &options.name, edge).ok_or_else(|| {
+        anyhow::anyhow!(
+            "layout does not include server screen '{}' for capture probe",
+            options.name
+        )
+    })?;
+
+    let mut events = Vec::with_capacity(probe_options.steps as usize + 1);
+    let mut logs = vec![
+        format!(
+            "capture probe request={request_id} server={} target={target_screen} edge={edge:?} steps={} dx={} dy={}",
+            options.name, probe_options.steps, probe_options.dx, probe_options.dy
+        ),
+        format!("capture source 0: LocalPointer x={x} y={y}"),
+    ];
+    events.push(CaptureEvent::ProbeLocalPointer { request_id, x, y });
+
+    for index in 1..=probe_options.steps {
+        logs.push(format!(
+            "capture source {index}: MouseMove dx={} dy={}",
+            probe_options.dx, probe_options.dy
+        ));
+        events.push(CaptureEvent::ProbeInput {
+            request_id,
+            event: InputEvent::MouseMove {
+                dx: probe_options.dx,
+                dy: probe_options.dy,
+            },
+        });
+    }
+
+    Ok((events, logs))
+}
+
+fn capture_probe_id(event: &CaptureEvent) -> Option<Uuid> {
+    match event {
+        CaptureEvent::ProbeLocalPointer { request_id, .. }
+        | CaptureEvent::ProbeInput { request_id, .. } => Some(*request_id),
+        CaptureEvent::LocalPointer { .. } | CaptureEvent::Input(_) => None,
+    }
+}
+
+fn capture_event_payload(event: CaptureEvent) -> CaptureEvent {
+    match event {
+        CaptureEvent::ProbeLocalPointer { x, y, .. } => CaptureEvent::LocalPointer { x, y },
+        CaptureEvent::ProbeInput { event, .. } => CaptureEvent::Input(event),
+        other => other,
+    }
+}
+
+fn maybe_finish_capture_probe(
+    request_id: Uuid,
+    pending_capture_probes: &mut HashMap<Uuid, PendingCaptureProbe>,
+    capture_probe_seq_index: &mut HashMap<u64, Uuid>,
+) {
+    let ready = pending_capture_probes
+        .get(&request_id)
+        .is_some_and(|probe| {
+            probe.processed_capture_events >= probe.expected_capture_events
+                && probe.remaining_seqs.is_empty()
+        });
+    if !ready {
+        return;
+    }
+
+    let Some(probe) = pending_capture_probes.remove(&request_id) else {
+        return;
+    };
+    for seq in &probe.remaining_seqs {
+        capture_probe_seq_index.remove(seq);
+    }
+
+    let ok = probe.routed_events == probe.expected_capture_events;
+    let message = if ok {
+        format!(
+            "capture probe delivered and acknowledged {} events through capture path",
+            probe.routed_events
+        )
+    } else {
+        format!(
+            "capture probe routed {}/{} synthetic capture events",
+            probe.routed_events, probe.expected_capture_events
+        )
+    };
+
+    let _ = probe.response_tx.send(DebugResponse {
+        request_id,
+        ok,
+        message,
+        display: None,
+        logs: probe.logs,
+    });
 }
 
 fn build_route_status_logs(
@@ -910,7 +1157,7 @@ fn route_capture_event(
     client_name: &str,
 ) -> Option<InputEvent> {
     let routed = match event {
-        CaptureEvent::LocalPointer { x, y } => {
+        CaptureEvent::LocalPointer { x, y } | CaptureEvent::ProbeLocalPointer { x, y, .. } => {
             let routed = router.as_mut()?.observe_local_pointer(x, y)?;
             if let InputEvent::MouseAbs {
                 x: target_x,
@@ -928,7 +1175,9 @@ fn route_capture_event(
             }
             routed
         }
-        CaptureEvent::Input(event) => router.as_mut()?.route_if_remote_active(event)?,
+        CaptureEvent::Input(event) | CaptureEvent::ProbeInput { event, .. } => {
+            router.as_mut()?.route_if_remote_active(event)?
+        }
     };
     (routed.target_screen == client_name).then_some(routed.event)
 }
@@ -1298,6 +1547,118 @@ mod tests {
         assert_eq!(response.request_id, request_id);
         assert!(response.ok);
         assert!(response.logs.iter().any(|line| line.contains("event 0")));
+        assert!(response.logs.iter().any(|line| line == "ack seq=3"));
+    }
+
+    #[tokio::test]
+    async fn diagnostic_capture_probe_enters_capture_routing_path() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let options = test_options(listen);
+        let allow = HashSet::from(["mac".to_string()]);
+        let (capture_tx, _) = crate::capture::channel();
+        let sessions = SessionRegistry::default();
+
+        tokio::spawn({
+            let options = options.clone();
+            let allow = allow.clone();
+            let capture_tx = capture_tx.clone();
+            let sessions = sessions.clone();
+            async move {
+                for _ in 0..2 {
+                    let (stream, peer) = listener.accept().await.unwrap();
+                    tokio::spawn(handle_client(
+                        stream,
+                        peer,
+                        options.clone(),
+                        allow.clone(),
+                        capture_tx.clone(),
+                        sessions.clone(),
+                    ));
+                }
+            }
+        });
+
+        let mut client = TcpStream::connect(listen).await.unwrap();
+        write_frame(
+            &mut client,
+            &Message::Hello(Hello::client("mac").with_screen_size(Size {
+                width: 1512,
+                height: 982,
+            })),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            read_frame(&mut client).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let mut diag = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut diag, &Message::Hello(Hello::diagnostic("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut diag).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let request_id = Uuid::new_v4();
+        write_frame(
+            &mut diag,
+            &Message::DebugRequest(DebugRequest {
+                request_id,
+                command: DebugCommand::CaptureProbe {
+                    edge: Some(Edge::Right),
+                    steps: 2,
+                    dx: 40,
+                    dy: -1,
+                },
+            }),
+        )
+        .await
+        .unwrap();
+
+        let expected_events = [
+            InputEvent::MouseAbs { x: 1, y: 491 },
+            InputEvent::MouseMove { dx: 40, dy: -1 },
+            InputEvent::MouseMove { dx: 40, dy: -1 },
+        ];
+        for expected in expected_events {
+            let packet = match tokio::time::timeout(Duration::from_secs(1), read_frame(&mut client))
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                Message::Input(packet) => packet,
+                other => panic!("expected capture probe input, got {other:?}"),
+            };
+            assert_eq!(packet.event, expected);
+            write_frame(&mut client, &Message::Ack(EventAck { seq: packet.seq }))
+                .await
+                .unwrap();
+        }
+
+        let response = match tokio::time::timeout(Duration::from_secs(1), read_frame(&mut diag))
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Message::DebugResponse(response) => response,
+            other => panic!("expected capture probe debug response, got {other:?}"),
+        };
+        assert_eq!(response.request_id, request_id);
+        assert!(response.ok);
+        assert!(
+            response
+                .message
+                .contains("capture probe delivered and acknowledged 3 events")
+        );
+        assert!(
+            response.logs.iter().any(|line| {
+                line.contains("capture event 1 routed target=mac MouseAbs x=1 y=491")
+            })
+        );
         assert!(response.logs.iter().any(|line| line == "ack seq=3"));
     }
 

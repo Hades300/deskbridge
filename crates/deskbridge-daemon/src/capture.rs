@@ -1,10 +1,13 @@
 use deskbridge_core::InputEvent;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CaptureEvent {
     LocalPointer { x: u32, y: u32 },
     Input(InputEvent),
+    ProbeLocalPointer { request_id: Uuid, x: u32, y: u32 },
+    ProbeInput { request_id: Uuid, event: InputEvent },
 }
 
 pub type CaptureSender = broadcast::Sender<CaptureEvent>;
