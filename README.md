@@ -94,8 +94,11 @@ Run a macOS client:
 
 ```bash
 deskbridge client --server 192.168.2.5:24800 --name mac
+deskbridge client --server 192.168.2.5:24800 --name mac --stale-after-ms 6000
 deskbridge client --config examples/deskbridge.json
 ```
+
+The client treats a connection as stale when it receives no server frames for `stale_after_ms`, then drops the socket and enters the normal reconnect loop. This catches Windows sleep, reboot, and half-open network failures where TCP does not immediately report an error.
 
 Run diagnostics:
 

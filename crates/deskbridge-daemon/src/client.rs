@@ -2,12 +2,15 @@ use crate::input::{EnigoSink, InputSink, LogSink};
 use anyhow::{Context, Result, anyhow};
 use deskbridge_core::{
     DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, EventAck,
-    Hello, InputEvent, InputPacket, Message, Ping, Pong, REPLACED_SESSION_REASON, read_frame,
-    write_frame,
+    FrameError, Hello, InputEvent, InputPacket, Message, Ping, Pong, REPLACED_SESSION_REASON,
+    read_frame, write_frame,
 };
 use std::collections::VecDeque;
-use std::{net::SocketAddr, time::Duration};
-use tokio::{net::TcpStream, time};
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
+use tokio::{net::TcpStream, sync::mpsc, time};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
@@ -17,6 +20,7 @@ pub struct ClientOptions {
     pub dry_run: bool,
     pub reconnect: bool,
     pub reconnect_max_ms: u64,
+    pub stale_after_ms: u64,
     pub max_events: Option<u64>,
 }
 
@@ -88,11 +92,22 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     } else {
         Box::new(EnigoSink::new()?)
     };
+    let (reader, mut writer) = stream.into_split();
+    let mut inbound = spawn_reader(reader);
 
     let heartbeat = Duration::from_millis(heartbeat_ms.max(DEFAULT_HEARTBEAT_MS));
+    let stale_after = Duration::from_millis(
+        options
+            .stale_after_ms
+            .max(heartbeat.as_millis().saturating_mul(2) as u64),
+    );
     let mut ticker = time::interval(heartbeat);
+    let mut stale_check = time::interval(Duration::from_millis(
+        (heartbeat.as_millis() as u64 / 2).clamp(250, 2_000),
+    ));
     let mut seq = 0_u64;
     let mut received_events = 0_u64;
+    let mut last_rx = Instant::now();
     let mut debug_state = ClientDebugState::new(options);
     debug_state.push(format!("connected to server {}", options.server));
 
@@ -105,12 +120,24 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                     sent_at_ms: deskbridge_core::now_ms(),
                 });
                 debug!(seq, "sending heartbeat");
-                write_frame(&mut stream, &ping).await?;
+                write_frame(&mut writer, &ping).await?;
             }
-            msg = read_frame(&mut stream) => {
-                match msg? {
+            _ = stale_check.tick() => {
+                let silent_for = last_rx.elapsed();
+                if silent_for > stale_after {
+                    return Err(anyhow!(
+                        "server heartbeat stale: no inbound frame for {}ms; reconnecting",
+                        silent_for.as_millis()
+                    ));
+                }
+            }
+            msg = inbound.recv() => {
+                let message = msg
+                    .ok_or_else(|| anyhow!("server reader stopped"))??;
+                last_rx = Instant::now();
+                match message {
                     Message::Ping(ping) => {
-                        write_frame(&mut stream, &Message::Pong(Pong {
+                        write_frame(&mut writer, &Message::Pong(Pong {
                             seq: ping.seq,
                             sent_at_ms: ping.sent_at_ms,
                         })).await?;
@@ -120,7 +147,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                     }
                     Message::Input(packet) => {
                         sink.apply(&packet).await?;
-                        write_frame(&mut stream, &Message::Ack(EventAck { seq: packet.seq })).await?;
+                        write_frame(&mut writer, &Message::Ack(EventAck { seq: packet.seq })).await?;
                         received_events += 1;
                         debug_state.push(format!("applied input seq={} event={:?}", packet.seq, packet.event));
                         if options.max_events.is_some_and(|max_events| received_events >= max_events) {
@@ -129,7 +156,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                     }
                     Message::DebugRequest(request) => {
                         let response = handle_debug_request(request, sink.as_mut(), &mut debug_state).await;
-                        write_frame(&mut stream, &Message::DebugResponse(response)).await?;
+                        write_frame(&mut writer, &Message::DebugResponse(response)).await?;
                     }
                     Message::Status(status) => {
                         warn!(kind = ?status.kind, message = status.message, "server status");
@@ -145,6 +172,23 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
             }
         }
     }
+}
+
+fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let result = read_frame(&mut reader).await;
+            let should_stop = result.is_err();
+            if tx.send(result).is_err() || should_stop {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 #[derive(Debug)]
@@ -334,5 +378,75 @@ fn client_hello(options: &ClientOptions) -> Hello {
             warn!(error = %err, "could not include client display size in handshake");
             hello
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deskbridge_core::{InputPacket, Welcome};
+    use tokio::net::TcpListener;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn stale_connection_reconnects_and_receives_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            assert!(matches!(
+                read_frame(&mut first).await.unwrap(),
+                Message::Hello(_)
+            ));
+            write_frame(&mut first, &welcome()).await.unwrap();
+            time::sleep(Duration::from_secs(2)).await;
+            drop(first);
+
+            let (mut second, _) = listener.accept().await.unwrap();
+            assert!(matches!(
+                read_frame(&mut second).await.unwrap(),
+                Message::Hello(_)
+            ));
+            write_frame(&mut second, &welcome()).await.unwrap();
+            write_frame(
+                &mut second,
+                &Message::Input(InputPacket {
+                    seq: 1,
+                    event: InputEvent::MouseMove { dx: 1, dy: 0 },
+                }),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                read_frame(&mut second).await.unwrap(),
+                Message::Ack(EventAck { seq: 1 })
+            ));
+        });
+
+        time::timeout(
+            Duration::from_secs(5),
+            run(ClientOptions {
+                server,
+                name: "mac".to_string(),
+                dry_run: true,
+                reconnect: true,
+                reconnect_max_ms: 500,
+                stale_after_ms: 250,
+                max_events: Some(1),
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
+    fn welcome() -> Message {
+        Message::Welcome(Welcome {
+            session_id: Uuid::new_v4(),
+            server_name: "windows".to_string(),
+            heartbeat_interval_ms: 100,
+            layout_revision: 1,
+        })
     }
 }

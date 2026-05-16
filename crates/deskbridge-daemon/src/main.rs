@@ -43,6 +43,8 @@ enum Command {
         once: bool,
         #[arg(long)]
         max_events: Option<u64>,
+        #[arg(long)]
+        stale_after_ms: Option<u64>,
     },
     /// Run a server that accepts clients and can emit demo input events.
     Server {
@@ -194,6 +196,7 @@ async fn main() -> Result<()> {
             reconnect,
             once,
             max_events,
+            stale_after_ms,
         } => {
             let config = load_config(config)?;
             let server = server
@@ -211,12 +214,16 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .map(|cfg| cfg.reliability.reconnect_max_ms)
                 .unwrap_or(10_000);
+            let stale_after_ms = stale_after_ms
+                .or_else(|| config.as_ref().map(|cfg| cfg.reliability.stale_after_ms))
+                .unwrap_or(6_000);
             client::run(client::ClientOptions {
                 server,
                 name,
                 dry_run,
                 reconnect: reconnect && !once,
                 reconnect_max_ms,
+                stale_after_ms,
                 max_events,
             })
             .await

@@ -40,14 +40,24 @@ pub mod windows {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-        GetMessageW, HC_ACTION, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
-        RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SetWindowsHookExW, TranslateMessage,
-        UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
+        GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, RegisterClassW,
+        SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+        WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
     };
 
     static CAPTURE_TX: OnceLock<Mutex<CaptureSender>> = OnceLock::new();
+    static CAPTURE_BOUNDS: OnceLock<ScreenBounds> = OnceLock::new();
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ScreenBounds {
+        origin_x: i32,
+        origin_y: i32,
+        width: u32,
+        height: u32,
+    }
 
     pub struct WindowsHookCapture {
         raw_input_hwnd: HWND,
@@ -60,6 +70,7 @@ pub mod windows {
             CAPTURE_TX
                 .set(Mutex::new(sender))
                 .map_err(|_| anyhow!("windows capture hook already installed"))?;
+            let _ = CAPTURE_BOUNDS.set(platform_screen_bounds());
 
             let raw_input_hwnd = create_raw_input_window()?;
             register_raw_mouse(raw_input_hwnd)?;
@@ -135,11 +146,47 @@ pub mod windows {
     }
 
     pub fn primary_screen_size() -> Option<(u32, u32)> {
+        let bounds = platform_screen_bounds();
+        Some((bounds.width, bounds.height))
+    }
+
+    fn platform_screen_bounds() -> ScreenBounds {
+        if let Some(bounds) = virtual_screen_bounds() {
+            return bounds;
+        }
+
         let width =
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CXSCREEN) };
         let height =
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CYSCREEN) };
-        (width > 0 && height > 0).then_some((width as u32, height as u32))
+        ScreenBounds {
+            origin_x: 0,
+            origin_y: 0,
+            width: width.max(1) as u32,
+            height: height.max(1) as u32,
+        }
+    }
+
+    fn virtual_screen_bounds() -> Option<ScreenBounds> {
+        let origin_x = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_XVIRTUALSCREEN)
+        };
+        let origin_y = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_YVIRTUALSCREEN)
+        };
+        let width = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        };
+        let height = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        };
+
+        (width > 0 && height > 0).then_some(ScreenBounds {
+            origin_x,
+            origin_y,
+            width: width as u32,
+            height: height as u32,
+        })
     }
 
     fn create_raw_input_window() -> Result<HWND> {
@@ -170,7 +217,7 @@ pub mod windows {
                 0,
                 0,
                 0,
-                HWND_MESSAGE,
+                null_mut(),
                 null_mut(),
                 instance as _,
                 null(),
@@ -286,12 +333,9 @@ pub mod windows {
 
         match wparam as u32 {
             WM_MOUSEMOVE => {
-                let x = hook.pt.x;
-                let y = hook.pt.y;
-                vec![CaptureEvent::LocalPointer {
-                    x: x.max(0) as u32,
-                    y: y.max(0) as u32,
-                }]
+                let bounds = *CAPTURE_BOUNDS.get_or_init(platform_screen_bounds);
+                let (x, y) = normalize_point(hook.pt.x, hook.pt.y, bounds);
+                vec![CaptureEvent::LocalPointer { x, y }]
             }
             WM_LBUTTONDOWN => vec![mouse_button(Button::Left, KeyState::Pressed)],
             WM_LBUTTONUP => vec![mouse_button(Button::Left, KeyState::Released)],
@@ -320,6 +364,15 @@ pub mod windows {
 
     fn mouse_button(button: Button, state: KeyState) -> CaptureEvent {
         CaptureEvent::Input(InputEvent::MouseButton { button, state })
+    }
+
+    fn normalize_point(x: i32, y: i32, bounds: ScreenBounds) -> (u32, u32) {
+        let max_x = bounds.width.saturating_sub(1) as i32;
+        let max_y = bounds.height.saturating_sub(1) as i32;
+        (
+            (x - bounds.origin_x).clamp(0, max_x) as u32,
+            (y - bounds.origin_y).clamp(0, max_y) as u32,
+        )
     }
 
     fn key_name(vk_code: u32) -> Option<String> {
@@ -353,6 +406,25 @@ pub mod windows {
         };
         if let Ok(sender) = sender.lock() {
             let _ = sender.send(event);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn normalizes_virtual_desktop_coordinates() {
+            let bounds = ScreenBounds {
+                origin_x: -1920,
+                origin_y: -100,
+                width: 3840,
+                height: 1180,
+            };
+
+            assert_eq!(normalize_point(-1920, -100, bounds), (0, 0));
+            assert_eq!(normalize_point(-1, 540, bounds), (1919, 640));
+            assert_eq!(normalize_point(4000, 2000, bounds), (3839, 1179));
         }
     }
 }

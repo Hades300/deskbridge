@@ -402,7 +402,7 @@ async fn handle_client(
     write_frame(&mut stream, &welcome).await?;
 
     let result = run_client_session(
-        &mut stream,
+        stream,
         ClientSessionRuntime {
             options: &options,
             client_name: &hello.screen_name,
@@ -436,10 +436,7 @@ async fn handle_client(
     result
 }
 
-async fn run_client_session(
-    mut stream: &mut TcpStream,
-    runtime: ClientSessionRuntime<'_>,
-) -> Result<()> {
+async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>) -> Result<()> {
     let ClientSessionRuntime {
         options,
         client_name,
@@ -452,6 +449,8 @@ async fn run_client_session(
         server_log,
     } = runtime;
     let mut ticker = time::interval(Duration::from_secs(5));
+    let (reader, mut writer) = stream.into_split();
+    let mut inbound = spawn_reader(reader);
     let mut seq = 0_u64;
     let mut demo_stage = 0_u64;
     let mut demo_router = InputRouter::new(options.layout.clone(), options.name.clone()).ok();
@@ -474,7 +473,7 @@ async fn run_client_session(
                     demo_stage,
                 );
                 demo_stage += 1;
-                write_frame(&mut stream, &Message::Input(InputPacket {
+                write_frame(&mut writer, &Message::Input(InputPacket {
                     seq,
                     event,
                 })).await?;
@@ -526,7 +525,7 @@ async fn run_client_session(
 
                     if let Some(event) = routed {
                         seq += 1;
-                        write_frame(&mut stream, &Message::Input(InputPacket {
+                        write_frame(&mut writer, &Message::Input(InputPacket {
                             seq,
                             event,
                         })).await?;
@@ -549,14 +548,14 @@ async fn run_client_session(
                 }
             }
             _ = shutdown_rx.recv() => {
-                let _ = write_frame(&mut stream, &Message::Goodbye {
+                let _ = write_frame(&mut writer, &Message::Goodbye {
                     reason: REPLACED_SESSION_REASON.to_string(),
                 }).await;
                 return Ok(());
             }
             Some(debug) = debug_rx.recv() => {
                 let request_id = debug.request.request_id;
-                if let Err(err) = write_frame(&mut stream, &Message::DebugRequest(debug.request)).await {
+                if let Err(err) = write_frame(&mut writer, &Message::DebugRequest(debug.request)).await {
                     let _ = debug.response_tx.send(debug_error_response(
                         request_id,
                         format!("failed to send debug request to client: {err}"),
@@ -596,7 +595,7 @@ async fn run_client_session(
                         let mut seqs = HashSet::new();
                         for event in events {
                             seq += 1;
-                            write_frame(&mut stream, &Message::Input(InputPacket {
+                            write_frame(&mut writer, &Message::Input(InputPacket {
                                 seq,
                                 event,
                             })).await?;
@@ -665,10 +664,12 @@ async fn run_client_session(
                     }
                 }
             }
-            msg = read_frame(&mut stream) => {
-                match msg? {
+            msg = inbound.recv() => {
+                let message = msg
+                    .ok_or_else(|| anyhow::anyhow!("client reader stopped"))??;
+                match message {
                     Message::Ping(ping) => {
-                        write_frame(&mut stream, &Message::Pong(deskbridge_core::Pong {
+                        write_frame(&mut writer, &Message::Pong(deskbridge_core::Pong {
                             seq: ping.seq,
                             sent_at_ms: ping.sent_at_ms,
                         })).await?;
@@ -823,6 +824,23 @@ async fn handle_diagnostic_session(
         Ok(Err(err)) => Err(err.into()),
         Err(_) => Ok(()),
     }
+}
+
+fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let result = read_frame(&mut reader).await;
+            let should_stop = result.is_err();
+            if tx.send(result).is_err() || should_stop {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 #[derive(Debug, Clone, Copy)]
