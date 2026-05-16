@@ -354,6 +354,186 @@ pub mod windows {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub mod macos {
+    use super::{CaptureEvent, CaptureSender, InputEvent};
+    use anyhow::{Result, anyhow};
+    use core_foundation::runloop::CFRunLoop;
+    use core_graphics::event::{
+        CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+        CGEventType, CallbackResult, EventField, KeyCode,
+    };
+    use deskbridge_core::{Button, KeyState};
+    use std::thread;
+
+    pub fn spawn(sender: CaptureSender) -> Result<()> {
+        thread::Builder::new()
+            .name("deskbridge-macos-capture".to_string())
+            .spawn(move || {
+                if let Err(err) = run_event_tap(sender) {
+                    eprintln!("deskbridge macos capture failed: {err:#}");
+                }
+            })
+            .map(|_| ())
+            .map_err(|err| anyhow!("failed to spawn macOS capture thread: {err}"))
+    }
+
+    pub fn primary_screen_size() -> Option<(u32, u32)> {
+        let display = core_graphics::display::CGDisplay::main();
+        let width = display.pixels_wide();
+        let height = display.pixels_high();
+        (width > 0 && height > 0).then_some((width as u32, height as u32))
+    }
+
+    fn run_event_tap(sender: CaptureSender) -> Result<()> {
+        let events = vec![
+            CGEventType::MouseMoved,
+            CGEventType::LeftMouseDragged,
+            CGEventType::RightMouseDragged,
+            CGEventType::OtherMouseDragged,
+            CGEventType::LeftMouseDown,
+            CGEventType::LeftMouseUp,
+            CGEventType::RightMouseDown,
+            CGEventType::RightMouseUp,
+            CGEventType::OtherMouseDown,
+            CGEventType::OtherMouseUp,
+            CGEventType::ScrollWheel,
+            CGEventType::KeyDown,
+            CGEventType::KeyUp,
+        ];
+
+        CGEventTap::with_enabled(
+            CGEventTapLocation::HID,
+            CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::ListenOnly,
+            events,
+            move |_proxy, event_type, event| {
+                for capture_event in capture_events_from_cg_event(event_type, event) {
+                    let _ = sender.send(capture_event);
+                }
+                CallbackResult::Keep
+            },
+            CFRunLoop::run_current,
+        )
+        .map_err(|_| anyhow!("failed to install macOS event tap; grant Input Monitoring and Accessibility to DeskBridge"))
+    }
+
+    fn capture_events_from_cg_event(event_type: CGEventType, event: &CGEvent) -> Vec<CaptureEvent> {
+        match event_type {
+            CGEventType::MouseMoved
+            | CGEventType::LeftMouseDragged
+            | CGEventType::RightMouseDragged
+            | CGEventType::OtherMouseDragged => mouse_move_events(event),
+            CGEventType::LeftMouseDown => vec![mouse_button(Button::Left, KeyState::Pressed)],
+            CGEventType::LeftMouseUp => vec![mouse_button(Button::Left, KeyState::Released)],
+            CGEventType::RightMouseDown => vec![mouse_button(Button::Right, KeyState::Pressed)],
+            CGEventType::RightMouseUp => vec![mouse_button(Button::Right, KeyState::Released)],
+            CGEventType::OtherMouseDown => vec![mouse_button(Button::Middle, KeyState::Pressed)],
+            CGEventType::OtherMouseUp => vec![mouse_button(Button::Middle, KeyState::Released)],
+            CGEventType::ScrollWheel => vec![CaptureEvent::Input(InputEvent::Wheel {
+                dx: event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2)
+                    as i32,
+                dy: event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1)
+                    as i32,
+            })],
+            CGEventType::KeyDown => keyboard_event(event, KeyState::Pressed)
+                .into_iter()
+                .collect(),
+            CGEventType::KeyUp => keyboard_event(event, KeyState::Released)
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn mouse_move_events(event: &CGEvent) -> Vec<CaptureEvent> {
+        let location = event.location();
+        let mut events = vec![CaptureEvent::LocalPointer {
+            x: location.x.max(0.0) as u32,
+            y: location.y.max(0.0) as u32,
+        }];
+
+        let dx = event.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_X) as i32;
+        let dy = event.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y) as i32;
+        if dx != 0 || dy != 0 {
+            events.push(CaptureEvent::Input(InputEvent::MouseMove { dx, dy }));
+        }
+
+        events
+    }
+
+    fn mouse_button(button: Button, state: KeyState) -> CaptureEvent {
+        CaptureEvent::Input(InputEvent::MouseButton { button, state })
+    }
+
+    fn keyboard_event(event: &CGEvent, state: KeyState) -> Option<CaptureEvent> {
+        let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+        key_name(keycode).map(|key| CaptureEvent::Input(InputEvent::Key { key, state }))
+    }
+
+    fn key_name(keycode: u16) -> Option<String> {
+        let key = match keycode {
+            KeyCode::ANSI_A => "a",
+            KeyCode::ANSI_B => "b",
+            KeyCode::ANSI_C => "c",
+            KeyCode::ANSI_D => "d",
+            KeyCode::ANSI_E => "e",
+            KeyCode::ANSI_F => "f",
+            KeyCode::ANSI_G => "g",
+            KeyCode::ANSI_H => "h",
+            KeyCode::ANSI_I => "i",
+            KeyCode::ANSI_J => "j",
+            KeyCode::ANSI_K => "k",
+            KeyCode::ANSI_L => "l",
+            KeyCode::ANSI_M => "m",
+            KeyCode::ANSI_N => "n",
+            KeyCode::ANSI_O => "o",
+            KeyCode::ANSI_P => "p",
+            KeyCode::ANSI_Q => "q",
+            KeyCode::ANSI_R => "r",
+            KeyCode::ANSI_S => "s",
+            KeyCode::ANSI_T => "t",
+            KeyCode::ANSI_U => "u",
+            KeyCode::ANSI_V => "v",
+            KeyCode::ANSI_W => "w",
+            KeyCode::ANSI_X => "x",
+            KeyCode::ANSI_Y => "y",
+            KeyCode::ANSI_Z => "z",
+            KeyCode::ANSI_0 => "0",
+            KeyCode::ANSI_1 => "1",
+            KeyCode::ANSI_2 => "2",
+            KeyCode::ANSI_3 => "3",
+            KeyCode::ANSI_4 => "4",
+            KeyCode::ANSI_5 => "5",
+            KeyCode::ANSI_6 => "6",
+            KeyCode::ANSI_7 => "7",
+            KeyCode::ANSI_8 => "8",
+            KeyCode::ANSI_9 => "9",
+            KeyCode::RETURN => "enter",
+            KeyCode::TAB => "tab",
+            KeyCode::SPACE => "space",
+            KeyCode::DELETE => "backspace",
+            KeyCode::ESCAPE => "escape",
+            KeyCode::COMMAND => "command",
+            KeyCode::SHIFT => "shift",
+            KeyCode::CAPS_LOCK => "capslock",
+            KeyCode::OPTION => "alt",
+            KeyCode::CONTROL => "control",
+            KeyCode::RIGHT_COMMAND => "command",
+            KeyCode::RIGHT_SHIFT => "shift",
+            KeyCode::RIGHT_OPTION => "alt",
+            KeyCode::RIGHT_CONTROL => "control",
+            KeyCode::LEFT_ARROW => "left",
+            KeyCode::RIGHT_ARROW => "right",
+            KeyCode::DOWN_ARROW => "down",
+            KeyCode::UP_ARROW => "up",
+            _ => return None,
+        };
+
+        Some(key.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

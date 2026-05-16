@@ -85,6 +85,8 @@ deskbridge server --config examples/deskbridge.json
 deskbridge server --config examples/deskbridge.json --capture
 ```
 
+`--capture` is available on Windows and macOS. On macOS, the server process needs Accessibility and Input Monitoring permissions because it installs a CoreGraphics event tap.
+
 Run a macOS client:
 
 ```bash
@@ -118,6 +120,15 @@ deskbridge inject-test --x 1 --y 559 --dx 80 --dy -2
 ```
 
 This moves the local pointer through the same input path used by the DeskBridge client and prints the pointer location before and after injection.
+
+Test the capture-to-protocol path on macOS without Windows by running a macOS server with `--capture` and a dry-run client:
+
+```bash
+deskbridge server --listen 127.0.0.1:24903 --allow mac --capture
+deskbridge client --server 127.0.0.1:24903 --name mac --dry-run
+```
+
+Move the server pointer across the configured edge. The client log should show `MouseAbs` followed by relative `MouseMove` events.
 
 Use `--dry-run` on the client to validate the protocol without injecting input.
 

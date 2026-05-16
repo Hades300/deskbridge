@@ -89,7 +89,27 @@ fn apply_platform_layout(options: ServerOptions) -> ServerOptions {
         options
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        let mut options = options;
+        if let Some((width, height)) = crate::capture::macos::primary_screen_size()
+            && let Some(screen) = options
+                .layout
+                .screens
+                .iter_mut()
+                .find(|screen| screen.name == options.name)
+        {
+            screen.size.width = width;
+            screen.size.height = height;
+            info!(
+                screen = options.name,
+                width, height, "using platform screen size for routing"
+            );
+        }
+        options
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     options
 }
 
@@ -297,10 +317,15 @@ fn start_platform_capture(capture_tx: crate::capture::CaptureSender) -> Result<(
         crate::capture::windows::spawn(capture_tx)
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::capture::macos::spawn(capture_tx)
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = capture_tx;
-        anyhow::bail!("input capture is only implemented for Windows hosts");
+        anyhow::bail!("input capture is only implemented for Windows and macOS hosts");
     }
 }
 
