@@ -15,9 +15,10 @@ use std::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
+    io::AsyncWrite,
     net::TcpListener,
     net::TcpStream,
     sync::{Mutex, mpsc, oneshot},
@@ -104,6 +105,7 @@ enum RouteDebugCommand {
     Probe(RouteProbeOptions),
     CaptureProbe(RouteProbeOptions),
     Status,
+    Perf,
 }
 
 #[derive(Debug)]
@@ -121,6 +123,242 @@ struct PendingCaptureProbe {
     remaining_seqs: HashSet<u64>,
     logs: Vec<String>,
     response_tx: oneshot::Sender<DebugResponse>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SentEventSample {
+    at_ms: u128,
+    kind: crate::perf::EventKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DurationSample {
+    at_ms: u128,
+    value: u128,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OutstandingInput {
+    sent_at_ms: u128,
+}
+
+#[derive(Debug)]
+struct ServerPerfMetrics {
+    started_at_ms: u128,
+    capture_events: u64,
+    routed_events: u64,
+    sent_events: u64,
+    ack_events: u64,
+    route_misses: u64,
+    mouse_move_events: u64,
+    mouse_abs_events: u64,
+    button_events: u64,
+    wheel_events: u64,
+    key_events: u64,
+    text_events: u64,
+    sent_window: VecDeque<SentEventSample>,
+    ack_rtt_ms_window: VecDeque<DurationSample>,
+    client_apply_us_window: VecDeque<DurationSample>,
+    write_us_window: VecDeque<DurationSample>,
+    outstanding: HashMap<u64, OutstandingInput>,
+}
+
+impl ServerPerfMetrics {
+    fn new() -> Self {
+        Self {
+            started_at_ms: deskbridge_core::now_ms(),
+            capture_events: 0,
+            routed_events: 0,
+            sent_events: 0,
+            ack_events: 0,
+            route_misses: 0,
+            mouse_move_events: 0,
+            mouse_abs_events: 0,
+            button_events: 0,
+            wheel_events: 0,
+            key_events: 0,
+            text_events: 0,
+            sent_window: VecDeque::with_capacity(1024),
+            ack_rtt_ms_window: VecDeque::with_capacity(1024),
+            client_apply_us_window: VecDeque::with_capacity(1024),
+            write_us_window: VecDeque::with_capacity(1024),
+            outstanding: HashMap::new(),
+        }
+    }
+
+    fn record_capture(&mut self) {
+        self.capture_events += 1;
+    }
+
+    fn record_route_miss(&mut self) {
+        self.route_misses += 1;
+    }
+
+    fn record_sent(
+        &mut self,
+        seq: u64,
+        kind: crate::perf::EventKind,
+        sent_at_ms: u128,
+        write_us: u128,
+    ) {
+        self.routed_events += 1;
+        self.sent_events += 1;
+        match kind {
+            crate::perf::EventKind::MouseMove => self.mouse_move_events += 1,
+            crate::perf::EventKind::MouseAbs => self.mouse_abs_events += 1,
+            crate::perf::EventKind::MouseButton => self.button_events += 1,
+            crate::perf::EventKind::Wheel => self.wheel_events += 1,
+            crate::perf::EventKind::Key => self.key_events += 1,
+            crate::perf::EventKind::Text => self.text_events += 1,
+        }
+        self.sent_window.push_back(SentEventSample {
+            at_ms: sent_at_ms,
+            kind,
+        });
+        self.write_us_window.push_back(DurationSample {
+            at_ms: sent_at_ms,
+            value: write_us,
+        });
+        self.outstanding
+            .insert(seq, OutstandingInput { sent_at_ms });
+        self.trim(sent_at_ms);
+    }
+
+    fn record_ack(&mut self, ack: &deskbridge_core::EventAck, at_ms: u128) {
+        self.ack_events += 1;
+        if let Some(sent) = self.outstanding.remove(&ack.seq) {
+            self.ack_rtt_ms_window.push_back(DurationSample {
+                at_ms,
+                value: at_ms.saturating_sub(sent.sent_at_ms),
+            });
+        }
+        if let Some(apply_us) = ack.apply_duration_us {
+            self.client_apply_us_window.push_back(DurationSample {
+                at_ms,
+                value: apply_us,
+            });
+        }
+        self.trim(at_ms);
+    }
+
+    fn logs(&mut self, session_id: Uuid, peer: SocketAddr, client_name: &str) -> Vec<String> {
+        let now = deskbridge_core::now_ms();
+        self.trim(now);
+        let window_ms = crate::perf::PERF_WINDOW_MS.min(now.saturating_sub(self.started_at_ms));
+        let sent_window = self.sent_window.len();
+        let mouse_window = self
+            .sent_window
+            .iter()
+            .filter(|sample| sample.kind == crate::perf::EventKind::MouseMove)
+            .count();
+        let mut ack_rtt = self
+            .ack_rtt_ms_window
+            .iter()
+            .map(|sample| sample.value)
+            .collect::<Vec<_>>();
+        let mut apply_us = self
+            .client_apply_us_window
+            .iter()
+            .map(|sample| sample.value)
+            .collect::<Vec<_>>();
+        let mut write_us = self
+            .write_us_window
+            .iter()
+            .map(|sample| sample.value)
+            .collect::<Vec<_>>();
+
+        let ack_p50 = crate::perf::percentile(&mut ack_rtt.clone(), 50);
+        let ack_p95 = crate::perf::percentile(&mut ack_rtt.clone(), 95);
+        let ack_p99 = crate::perf::percentile(&mut ack_rtt, 99);
+        let apply_p50 = crate::perf::percentile(&mut apply_us.clone(), 50);
+        let apply_p95 = crate::perf::percentile(&mut apply_us.clone(), 95);
+        let apply_p99 = crate::perf::percentile(&mut apply_us, 99);
+        let write_p50 = crate::perf::percentile(&mut write_us.clone(), 50);
+        let write_p95 = crate::perf::percentile(&mut write_us.clone(), 95);
+        let write_p99 = crate::perf::percentile(&mut write_us, 99);
+
+        vec![
+            "perf_scope=server_route_session".to_string(),
+            format!("session={session_id} peer={peer} target={client_name}"),
+            format!("window_ms={window_ms}"),
+            format!("uptime_ms={}", now.saturating_sub(self.started_at_ms)),
+            format!(
+                "events_total capture={} routed={} sent={} ack={} capture_not_routed={} pending_ack={}",
+                self.capture_events,
+                self.routed_events,
+                self.sent_events,
+                self.ack_events,
+                self.route_misses,
+                self.outstanding.len()
+            ),
+            format!(
+                "events_window sent={} mouse_move={} sent_hz={:.1} mouse_hz={:.1}",
+                sent_window,
+                mouse_window,
+                crate::perf::rate_per_second(sent_window, window_ms.max(1)),
+                crate::perf::rate_per_second(mouse_window, window_ms.max(1))
+            ),
+            format!(
+                "event_counts mouse_move={} mouse_abs={} button={} wheel={} key={} text={}",
+                self.mouse_move_events,
+                self.mouse_abs_events,
+                self.button_events,
+                self.wheel_events,
+                self.key_events,
+                self.text_events
+            ),
+            format!(
+                "ack_rtt p50={} p95={} p99={}",
+                crate::perf::format_ms(ack_p50),
+                crate::perf::format_ms(ack_p95),
+                crate::perf::format_ms(ack_p99)
+            ),
+            format!(
+                "client_apply p50={} p95={} p99={}",
+                crate::perf::format_us(apply_p50),
+                crate::perf::format_us(apply_p95),
+                crate::perf::format_us(apply_p99)
+            ),
+            format!(
+                "server_write p50={} p95={} p99={}",
+                crate::perf::format_us(write_p50),
+                crate::perf::format_us(write_p95),
+                crate::perf::format_us(write_p99)
+            ),
+        ]
+    }
+
+    fn trim(&mut self, now_ms: u128) {
+        let cutoff = now_ms.saturating_sub(crate::perf::PERF_WINDOW_MS);
+        while self
+            .sent_window
+            .front()
+            .is_some_and(|sample| sample.at_ms < cutoff)
+        {
+            self.sent_window.pop_front();
+        }
+        while self
+            .ack_rtt_ms_window
+            .front()
+            .is_some_and(|sample| sample.at_ms < cutoff)
+        {
+            self.ack_rtt_ms_window.pop_front();
+        }
+        while self
+            .client_apply_us_window
+            .front()
+            .is_some_and(|sample| sample.at_ms < cutoff)
+        {
+            self.client_apply_us_window.pop_front();
+        }
+        while self
+            .write_us_window
+            .front()
+            .is_some_and(|sample| sample.at_ms < cutoff)
+        {
+            self.write_us_window.pop_front();
+        }
+    }
 }
 
 struct ClientSessionRuntime<'a> {
@@ -490,6 +728,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut route_probe_seq_index = HashMap::<u64, Uuid>::new();
     let mut pending_capture_probes = HashMap::<Uuid, PendingCaptureProbe>::new();
     let mut capture_probe_seq_index = HashMap::<u64, Uuid>::new();
+    let mut perf = ServerPerfMetrics::new();
 
     loop {
         tokio::select! {
@@ -506,13 +745,11 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     runtime_settings.reverse_scroll(),
                 );
                 demo_stage += 1;
-                write_frame(&mut writer, &Message::Input(InputPacket {
-                    seq,
-                    event,
-                })).await?;
+                write_input_packet(&mut writer, seq, event, &mut perf).await?;
             }
             event = capture_rx.recv() => {
                 if let Ok(event) = event {
+                    perf.record_capture();
                     let capture_log_line = if options.debug_capture_log {
                         Some(describe_capture_event(&event))
                     } else {
@@ -565,10 +802,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     if let Some(event) = routed {
                         seq += 1;
                         let event = transform_routed_input_event(event, runtime_settings.reverse_scroll());
-                        write_frame(&mut writer, &Message::Input(InputPacket {
-                            seq,
-                            event,
-                        })).await?;
+                        write_input_packet(&mut writer, seq, event, &mut perf).await?;
                         if let Some(request_id) = probe_id
                             && let Some(probe) = pending_capture_probes.get_mut(&request_id)
                         {
@@ -576,6 +810,8 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             probe.remaining_seqs.insert(seq);
                             probe.routed_events += 1;
                         }
+                    } else {
+                        perf.record_route_miss();
                     }
 
                     if let Some(request_id) = probe_id {
@@ -616,6 +852,16 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         });
                         continue;
                     }
+                    RouteDebugCommand::Perf => {
+                        let _ = route_debug.response_tx.send(DebugResponse {
+                            request_id: route_debug.request_id,
+                            ok: true,
+                            message: "server perf metrics read".to_string(),
+                            display: None,
+                            logs: perf.logs(session_id, peer, client_name),
+                        });
+                        continue;
+                    }
                     RouteDebugCommand::Probe(probe_options) => {
                         let (events, logs) = match build_route_probe_events(
                             options,
@@ -636,10 +882,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         for event in events {
                             seq += 1;
                             let event = transform_routed_input_event(event, runtime_settings.reverse_scroll());
-                            write_frame(&mut writer, &Message::Input(InputPacket {
-                                seq,
-                                event,
-                            })).await?;
+                            write_input_packet(&mut writer, seq, event, &mut perf).await?;
                             route_probe_seq_index.insert(seq, route_debug.request_id);
                             seqs.insert(seq);
                         }
@@ -717,6 +960,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     }
                     Message::Pong(pong) => debug!(seq = pong.seq, "client pong"),
                     Message::Ack(ack) => {
+                        perf.record_ack(&ack, deskbridge_core::now_ms());
                         debug!(seq = ack.seq, "input event acknowledged");
                         if let Some(request_id) = route_probe_seq_index.remove(&ack.seq) {
                             let completed = if let Some(probe) = pending_route_probes.get_mut(&request_id) {
@@ -850,6 +1094,16 @@ async fn handle_diagnostic_session(
                 )
                 .await
             }
+            DebugCommand::Perf => {
+                forward_route_debug_request(
+                    stream,
+                    target_screen,
+                    sessions,
+                    request.request_id,
+                    RouteDebugCommand::Perf,
+                )
+                .await
+            }
             DebugCommand::InputSettings { reverse_scroll } => {
                 let response = update_runtime_input_settings(
                     request.request_id,
@@ -877,6 +1131,25 @@ async fn handle_diagnostic_session(
         Ok(Err(err)) => Err(err.into()),
         Err(_) => Ok(()),
     }
+}
+
+async fn write_input_packet<W>(
+    writer: &mut W,
+    seq: u64,
+    event: InputEvent,
+    perf: &mut ServerPerfMetrics,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let kind = crate::perf::event_kind(&event);
+    let packet = InputPacket { seq, event };
+    let started = Instant::now();
+    let message = Message::Input(packet);
+    write_frame(writer, &message).await?;
+    let sent_at_ms = deskbridge_core::now_ms();
+    perf.record_sent(seq, kind, sent_at_ms, started.elapsed().as_micros());
+    Ok(())
 }
 
 fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
@@ -1767,6 +2040,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn server_perf_metrics_report_ack_rtt_and_apply_time() {
+        let mut perf = ServerPerfMetrics::new();
+        let sent_at_ms = deskbridge_core::now_ms();
+        perf.record_sent(7, crate::perf::EventKind::MouseMove, sent_at_ms, 12);
+        perf.record_ack(
+            &EventAck {
+                seq: 7,
+                received_at_ms: Some(sent_at_ms + 1),
+                applied_at_ms: Some(sent_at_ms + 2),
+                apply_duration_us: Some(345),
+            },
+            sent_at_ms + 3,
+        );
+
+        let logs = perf
+            .logs(Uuid::nil(), "127.0.0.1:24800".parse().unwrap(), "mac")
+            .join("\n");
+        assert!(logs.contains("perf_scope=server_route_session"));
+        assert!(logs.contains("sent=1 ack=1"));
+        assert!(logs.contains("pending_ack=0"));
+        assert!(logs.contains("mouse_move=1"));
+        assert!(logs.contains("ack_rtt p50=3ms"));
+        assert!(logs.contains("client_apply p50=345us"));
+        assert!(logs.contains("server_write p50=12us"));
+    }
+
     #[tokio::test]
     async fn diagnostic_handshake_does_not_replace_input_client() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2045,7 +2345,7 @@ mod tests {
                 other => panic!("expected route probe input, got {other:?}"),
             };
             assert_eq!(packet.event, expected);
-            write_frame(&mut client, &Message::Ack(EventAck { seq: packet.seq }))
+            write_frame(&mut client, &Message::Ack(EventAck::new(packet.seq)))
                 .await
                 .unwrap();
         }
@@ -2154,7 +2454,7 @@ mod tests {
                 other => panic!("expected capture probe input, got {other:?}"),
             };
             assert_eq!(packet.event, expected);
-            write_frame(&mut client, &Message::Ack(EventAck { seq: packet.seq }))
+            write_frame(&mut client, &Message::Ack(EventAck::new(packet.seq)))
                 .await
                 .unwrap();
         }

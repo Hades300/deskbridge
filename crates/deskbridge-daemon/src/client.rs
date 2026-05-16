@@ -147,13 +147,22 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                         debug!(seq = pong.seq, "heartbeat acknowledged");
                     }
                     Message::Input(mut packet) => {
+                        let received_at_ms = deskbridge_core::now_ms();
                         if options.reverse_scroll {
                             reverse_scroll_event(&mut packet.event);
                         }
+                        let apply_started = Instant::now();
                         sink.apply(&packet).await?;
-                        write_frame(&mut writer, &Message::Ack(EventAck { seq: packet.seq })).await?;
+                        let apply_duration_us = apply_started.elapsed().as_micros();
+                        let applied_at_ms = deskbridge_core::now_ms();
+                        write_frame(&mut writer, &Message::Ack(EventAck {
+                            seq: packet.seq,
+                            received_at_ms: Some(received_at_ms),
+                            applied_at_ms: Some(applied_at_ms),
+                            apply_duration_us: Some(apply_duration_us),
+                        })).await?;
                         received_events += 1;
-                        debug_state.push(format!("applied input seq={} event={:?}", packet.seq, packet.event));
+                        debug_state.record_input(&packet.event, apply_duration_us, applied_at_ms);
                         if options.max_events.is_some_and(|max_events| received_events >= max_events) {
                             return Ok(ClientSessionOutcome::Ended);
                         }
@@ -209,6 +218,7 @@ struct ClientDebugState {
     name: String,
     dry_run: bool,
     started_at_ms: u128,
+    perf: ClientPerfMetrics,
 }
 
 impl ClientDebugState {
@@ -219,6 +229,7 @@ impl ClientDebugState {
             name: options.name.clone(),
             dry_run: options.dry_run,
             started_at_ms: deskbridge_core::now_ms(),
+            perf: ClientPerfMetrics::new(),
         }
     }
 
@@ -250,6 +261,116 @@ impl ClientDebugState {
             Err(err) => logs.push(format!("process=unavailable ({err})")),
         }
         logs
+    }
+
+    fn record_input(&mut self, event: &InputEvent, apply_duration_us: u128, at_ms: u128) {
+        self.perf.record_input(event, apply_duration_us, at_ms);
+    }
+
+    fn perf_logs(&mut self) -> Vec<String> {
+        self.perf.logs(self.started_at_ms)
+    }
+}
+
+#[derive(Debug)]
+struct ClientPerfSample {
+    at_ms: u128,
+    apply_duration_us: u128,
+}
+
+#[derive(Debug)]
+struct ClientPerfMetrics {
+    total_events: u64,
+    mouse_move_events: u64,
+    mouse_abs_events: u64,
+    button_events: u64,
+    wheel_events: u64,
+    key_events: u64,
+    text_events: u64,
+    samples: VecDeque<ClientPerfSample>,
+}
+
+impl ClientPerfMetrics {
+    fn new() -> Self {
+        Self {
+            total_events: 0,
+            mouse_move_events: 0,
+            mouse_abs_events: 0,
+            button_events: 0,
+            wheel_events: 0,
+            key_events: 0,
+            text_events: 0,
+            samples: VecDeque::with_capacity(512),
+        }
+    }
+
+    fn record_input(&mut self, event: &InputEvent, apply_duration_us: u128, at_ms: u128) {
+        self.total_events += 1;
+        match crate::perf::event_kind(event) {
+            crate::perf::EventKind::MouseMove => self.mouse_move_events += 1,
+            crate::perf::EventKind::MouseAbs => self.mouse_abs_events += 1,
+            crate::perf::EventKind::MouseButton => self.button_events += 1,
+            crate::perf::EventKind::Wheel => self.wheel_events += 1,
+            crate::perf::EventKind::Key => self.key_events += 1,
+            crate::perf::EventKind::Text => self.text_events += 1,
+        }
+        self.samples.push_back(ClientPerfSample {
+            at_ms,
+            apply_duration_us,
+        });
+        self.trim(at_ms);
+    }
+
+    fn logs(&mut self, started_at_ms: u128) -> Vec<String> {
+        let now = deskbridge_core::now_ms();
+        self.trim(now);
+        let mut apply_values = self
+            .samples
+            .iter()
+            .map(|sample| sample.apply_duration_us)
+            .collect::<Vec<_>>();
+        let p50 = crate::perf::percentile(&mut apply_values.clone(), 50);
+        let p95 = crate::perf::percentile(&mut apply_values.clone(), 95);
+        let p99 = crate::perf::percentile(&mut apply_values, 99);
+        let window_ms = crate::perf::PERF_WINDOW_MS.min(now.saturating_sub(started_at_ms));
+
+        vec![
+            "perf_scope=client_apply".to_string(),
+            format!("window_ms={window_ms}"),
+            format!("uptime_ms={}", now.saturating_sub(started_at_ms)),
+            format!("events_total={}", self.total_events),
+            format!("events_window={}", self.samples.len()),
+            format!(
+                "events_window_hz={:.1}",
+                crate::perf::rate_per_second(self.samples.len(), window_ms.max(1))
+            ),
+            format!(
+                "event_counts mouse_move={} mouse_abs={} button={} wheel={} key={} text={}",
+                self.mouse_move_events,
+                self.mouse_abs_events,
+                self.button_events,
+                self.wheel_events,
+                self.key_events,
+                self.text_events
+            ),
+            format!(
+                "apply_duration p50={} p95={} p99={}",
+                crate::perf::format_us(p50),
+                crate::perf::format_us(p95),
+                crate::perf::format_us(p99)
+            ),
+        ]
+    }
+
+    fn trim(&mut self, now_ms: u128) {
+        let cutoff = now_ms.saturating_sub(crate::perf::PERF_WINDOW_MS);
+        while self
+            .samples
+            .front()
+            .is_some_and(|sample| sample.at_ms < cutoff)
+        {
+            self.samples.pop_front();
+        }
     }
 }
 
@@ -286,6 +407,13 @@ async fn handle_debug_request(
             message: "recent client debug log".to_string(),
             display: None,
             logs: debug_state.recent_logs(),
+        },
+        DebugCommand::Perf => DebugResponse {
+            request_id: request.request_id,
+            ok: true,
+            message: "client perf metrics read".to_string(),
+            display: None,
+            logs: debug_state.perf_logs(),
         },
         DebugCommand::MoveMouse { x, y, dx, dy } => apply_debug_mouse_move(sink, x, y, dx, dy)
             .await
@@ -432,7 +560,7 @@ mod tests {
             .unwrap();
             assert!(matches!(
                 read_frame(&mut second).await.unwrap(),
-                Message::Ack(EventAck { seq: 1 })
+                Message::Ack(EventAck { seq: 1, .. })
             ));
         });
 

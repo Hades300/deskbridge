@@ -117,6 +117,7 @@ deskbridge debug --server 192.168.2.5:24800 --name mac peer-info
 deskbridge debug --server 192.168.2.5:24800 --name mac move-mouse --dx 20 --dy 0
 deskbridge debug --server 192.168.2.5:24800 --name mac server-logs
 deskbridge debug --server 192.168.2.5:24800 --name mac route-status
+deskbridge debug --server 192.168.2.5:24800 --name mac perf
 deskbridge debug --server 192.168.2.5:24800 --name mac route-probe --steps 3 --dx 80 --dy -2
 deskbridge debug --server 192.168.2.5:24800 --name mac capture-probe --steps 3 --dx 80 --dy -2
 deskbridge debug --server 192.168.2.5:24800 --name mac logs
@@ -125,6 +126,7 @@ deskbridge debug --server 192.168.2.5:24800 --name mac logs
 The debug command uses the existing DeskBridge connection, so the Mac does not need to open an inbound port. `display-info` returns the target display and pointer location, `peer-info` returns the target client's build/platform/runtime metadata, `move-mouse` runs the same target-side input path as normal remote control, and `logs` returns recent target-side debug entries for the active client session.
 `server-logs` is answered directly by the server and includes build metadata, active sessions, connected client versions, and recent connection/capture history.
 `route-status` is server-side and reports the effective screen sizes, active route screen, and configured edge mappings used by the current target client session.
+`perf` is server-side and reports a rolling low-latency window: sent event rate, mouse move rate, pending acknowledgements, ACK round-trip percentiles, client input apply percentiles, and server write percentiles.
 `route-probe` is server-side: the server uses its current layout to synthesize an edge crossing to the target client, sends the resulting `MouseAbs` plus continued `MouseMove` packets, and waits for client acknowledgements. This validates the live server-to-client route without touching the Windows mouse.
 `capture-probe` is also server-side, but injects synthetic `LocalPointer` and `MouseMove` events into the server capture channel first. This validates the capture routing branch; if `capture-probe` passes but physical crossing fails, the remaining issue is in the platform capture hook or actual edge coordinates.
 

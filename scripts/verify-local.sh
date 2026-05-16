@@ -91,6 +91,7 @@ DEBUG_MOVE_OUT="$(mktemp /tmp/deskbridge-debug-move.XXXXXX)"
 DEBUG_ROUTE_STATUS_OUT="$(mktemp /tmp/deskbridge-debug-route-status.XXXXXX)"
 DEBUG_ROUTE_OUT="$(mktemp /tmp/deskbridge-debug-route.XXXXXX)"
 DEBUG_CAPTURE_OUT="$(mktemp /tmp/deskbridge-debug-capture.XXXXXX)"
+DEBUG_PERF_OUT="$(mktemp /tmp/deskbridge-debug-perf.XXXXXX)"
 DEBUG_LOGS_OUT="$(mktemp /tmp/deskbridge-debug-logs.XXXXXX)"
 DEBUG_PEER_OUT="$(mktemp /tmp/deskbridge-debug-peer.XXXXXX)"
 DEBUG_SERVER_LOGS_OUT="$(mktemp /tmp/deskbridge-debug-server-logs.XXXXXX)"
@@ -122,6 +123,7 @@ fi
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac route-status >"$DEBUG_ROUTE_STATUS_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac route-probe --steps 2 --dx 40 --dy -1 >"$DEBUG_ROUTE_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac capture-probe --steps 2 --dx 40 --dy -1 >"$DEBUG_CAPTURE_OUT"
+"$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac perf >"$DEBUG_PERF_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac peer-info >"$DEBUG_PEER_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac server-logs >"$DEBUG_SERVER_LOGS_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac logs >"$DEBUG_LOGS_OUT"
@@ -173,6 +175,21 @@ fi
 if ! grep -q "ack seq=" "$DEBUG_CAPTURE_OUT"; then
   cat "$DEBUG_CAPTURE_OUT"
   echo "debug capture-probe did not observe client acknowledgements"
+  exit 1
+fi
+if ! grep -q "server perf metrics read" "$DEBUG_PERF_OUT"; then
+  cat "$DEBUG_PERF_OUT"
+  echo "debug perf did not return server performance metrics"
+  exit 1
+fi
+if ! grep -q "ack_rtt p50=" "$DEBUG_PERF_OUT"; then
+  cat "$DEBUG_PERF_OUT"
+  echo "debug perf did not include acknowledgement latency"
+  exit 1
+fi
+if ! grep -q "client_apply p50=" "$DEBUG_PERF_OUT"; then
+  cat "$DEBUG_PERF_OUT"
+  echo "debug perf did not include client apply latency"
   exit 1
 fi
 if ! grep -q "debug request" "$DEBUG_LOGS_OUT"; then

@@ -156,6 +156,7 @@ jobs:
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac route-status >debug-route-status.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac route-probe --steps 2 --dx 40 --dy -1 >debug-route.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac capture-probe --steps 2 --dx 40 --dy -1 >debug-capture.out
+          ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac perf >debug-perf.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac peer-info >debug-peer.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac server-logs >debug-server-logs.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac logs >debug-logs.out
@@ -169,6 +170,9 @@ jobs:
           grep -q "capture probe delivered and acknowledged 3 events through capture path" debug-capture.out
           grep -q "capture event 1 routed target=mac MouseAbs" debug-capture.out
           grep -q "ack seq=" debug-capture.out
+          grep -q "server perf metrics read" debug-perf.out
+          grep -q "ack_rtt p50=" debug-perf.out
+          grep -q "client_apply p50=" debug-perf.out
           grep -q "role=client" debug-peer.out
           grep -q "role=server" debug-server-logs.out
           grep -q "client accepted" debug-server-logs.out

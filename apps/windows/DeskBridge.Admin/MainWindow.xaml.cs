@@ -634,6 +634,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             sections.Add("Runtime input settings:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "input-settings" }));
             sections.Add("Server debug log:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "server-logs" }));
             sections.Add("Route status:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "route-status" }));
+            sections.Add("Performance:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "perf" }));
             sections.Add("Client peer info:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "peer-info" }));
             sections.Add("Client recent log:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", targetName, "logs" }));
         }
@@ -644,6 +645,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac input-settings\n" +
             $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac server-logs\n" +
             $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac route-status\n" +
+            $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac perf\n" +
             $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac route-probe --steps 3 --dx 80 --dy -2\n" +
             $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac capture-probe --steps 3 --dx 80 --dy -2");
 

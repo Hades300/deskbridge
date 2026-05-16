@@ -4,6 +4,7 @@ mod client;
 mod debugctl;
 mod diag;
 mod input;
+mod perf;
 mod permissions;
 mod server;
 
@@ -173,6 +174,8 @@ enum DebugCliCommand {
     },
     /// Read the server-side route layout currently used by the active target session.
     RouteStatus,
+    /// Read low-latency performance counters for the active route session.
+    Perf,
     /// Read or update server-side input settings without restarting the server.
     InputSettings {
         #[arg(long, value_parser = clap::value_parser!(bool))]
@@ -436,6 +439,7 @@ fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
             dy,
         },
         DebugCliCommand::RouteStatus => DebugCommand::RouteStatus,
+        DebugCliCommand::Perf => DebugCommand::Perf,
         DebugCliCommand::InputSettings { reverse_scroll } => {
             DebugCommand::InputSettings { reverse_scroll }
         }

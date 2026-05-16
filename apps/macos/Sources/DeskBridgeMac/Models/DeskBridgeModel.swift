@@ -251,6 +251,7 @@ final class DeskBridgeModel: ObservableObject {
                     ("Runtime input settings", ["debug", "--server", server, "--name", name, "input-settings"]),
                     ("Server debug log", ["debug", "--server", server, "--name", name, "server-logs"]),
                     ("Route status", ["debug", "--server", server, "--name", name, "route-status"]),
+                    ("Performance", ["debug", "--server", server, "--name", name, "perf"]),
                     ("Client peer info", ["debug", "--server", server, "--name", name, "peer-info"]),
                     ("Client recent log", ["debug", "--server", server, "--name", name, "logs"]),
                 ]

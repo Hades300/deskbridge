@@ -150,6 +150,23 @@ pub struct Pong {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EventAck {
     pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_at_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_at_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply_duration_us: Option<u128>,
+}
+
+impl EventAck {
+    pub fn new(seq: u64) -> Self {
+        Self {
+            seq,
+            received_at_ms: None,
+            applied_at_ms: None,
+            apply_duration_us: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -215,6 +232,7 @@ pub enum DebugCommand {
         dy: i32,
     },
     RouteStatus,
+    Perf,
     InputSettings {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reverse_scroll: Option<bool>,
@@ -397,6 +415,30 @@ mod tests {
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: Message = serde_json::from_str(&encoded).unwrap();
         assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn debug_perf_round_trips() {
+        let request = Message::DebugRequest(DebugRequest {
+            request_id: Uuid::new_v4(),
+            command: DebugCommand::Perf,
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn input_ack_can_include_latency_metadata() {
+        let ack = Message::Ack(EventAck {
+            seq: 42,
+            received_at_ms: Some(100),
+            applied_at_ms: Some(105),
+            apply_duration_us: Some(420),
+        });
+        let encoded = serde_json::to_string(&ack).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(ack, decoded);
     }
 
     #[test]

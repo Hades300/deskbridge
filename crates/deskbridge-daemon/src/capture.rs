@@ -448,7 +448,14 @@ pub mod windows {
             return None;
         }
 
-        let mut buffer = vec![0_u8; size as usize];
+        let mut stack_buffer = [0_u8; size_of::<RAWINPUT>()];
+        let mut heap_buffer = Vec::new();
+        let buffer = if size as usize <= stack_buffer.len() {
+            &mut stack_buffer[..size as usize]
+        } else {
+            heap_buffer.resize(size as usize, 0);
+            heap_buffer.as_mut_slice()
+        };
         let read = unsafe {
             GetRawInputData(
                 input,
@@ -462,7 +469,7 @@ pub mod windows {
             return None;
         }
 
-        let raw = unsafe { &*(buffer.as_ptr() as *const RAWINPUT) };
+        let raw = unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<RAWINPUT>()) };
         if raw.header.dwType != RIM_TYPEMOUSE {
             return None;
         }

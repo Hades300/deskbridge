@@ -85,6 +85,7 @@ The first supported commands are:
 - `move-mouse`: run a target-side mouse injection test through the same input sink used for normal remote control.
 - `server-logs`: read server-side build metadata, active session metadata, connection history, and optional capture route history.
 - `route-status`: read the server-side effective layout and edge mapping for the active target session.
+- `perf`: read a rolling low-latency window with event rate, mouse movement rate, pending acknowledgements, ACK round-trip percentiles, target apply percentiles, and server write percentiles.
 - `route-probe`: ask the server to synthesize a configured edge crossing, deliver the resulting input packets to the target client, and return only after the client acknowledges them.
 - `capture-probe`: inject synthetic capture events into the server capture channel, route them through the same capture branch used by platform hooks, and return only after the client acknowledges the resulting input packets.
 - `logs`: return recent target-side debug entries kept in the active client session.

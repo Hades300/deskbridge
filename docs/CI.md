@@ -9,7 +9,7 @@ GitHub Actions can validate the portable parts of DeskBridge:
 - Protocol loopback between server, diagnostics, and dry-run client.
 - Local reconnect smoke test where the client starts first, observes connection failures, then connects after the server appears and receives a routed input event.
 - Unit coverage for stale half-open sessions where the server accepts a client and then stops responding; the client must time out, reconnect, and receive input from a new session.
-- Debug route-status, route-probe, and capture-probe smoke tests where a diagnostic request reads the live server's effective layout, synthesizes an edge crossing, injects synthetic capture events through the capture routing branch, delivers `MouseAbs` and continued `MouseMove` packets to the connected client, and waits for acknowledgements.
+- Debug route-status, perf, route-probe, and capture-probe smoke tests where a diagnostic request reads the live server's effective layout and rolling latency counters, synthesizes an edge crossing, injects synthetic capture events through the capture routing branch, delivers `MouseAbs` and continued `MouseMove` packets to the connected client, and waits for acknowledgements.
 - Local debug-control smoke test for remote display info, peer metadata, mouse test command, server-side diagnostic logs, and target-side debug logs.
 
 It cannot prove the full physical product behavior by itself. The following still need real Windows host validation:
