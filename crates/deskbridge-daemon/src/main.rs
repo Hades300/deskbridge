@@ -1,5 +1,6 @@
 mod capture;
 mod client;
+mod debugctl;
 mod diag;
 mod input;
 mod permissions;
@@ -9,8 +10,8 @@ use crate::input::InputSink;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, DeskBridgeConfig, Edge, InputEvent, InputPacket, InputRouter, Layout,
-    Link, Screen, Size, simulate_route,
+    DEFAULT_HEARTBEAT_MS, DebugCommand, DeskBridgeConfig, Edge, InputEvent, InputPacket,
+    InputRouter, Layout, Link, Screen, Size, simulate_route,
 };
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 use tracing_subscriber::EnvFilter;
@@ -66,6 +67,17 @@ enum Command {
         #[arg(long, default_value = "mac")]
         name: String,
     },
+    /// Send a debug command through the server to a connected client.
+    Debug {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        server: Option<SocketAddr>,
+        #[arg(long, default_value = "mac")]
+        name: String,
+        #[command(subcommand)]
+        command: DebugCliCommand,
+    },
     /// Simulate a configured edge crossing and continued remote mouse movement.
     SimulateRoute {
         #[arg(long)]
@@ -113,6 +125,25 @@ enum Command {
     InitConfig {
         #[arg(long, default_value = "deskbridge.json")]
         path: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DebugCliCommand {
+    /// Read the target client's display size and current mouse location.
+    DisplayInfo,
+    /// Read recent target-side debug log lines kept by the client session.
+    Logs,
+    /// Ask the target client to move its local pointer.
+    MoveMouse {
+        #[arg(long)]
+        x: Option<i32>,
+        #[arg(long)]
+        y: Option<i32>,
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        dx: i32,
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        dy: i32,
     },
 }
 
@@ -216,6 +247,26 @@ async fn main() -> Result<()> {
                 .unwrap_or(name);
             diag::run(server, name).await
         }
+        Command::Debug {
+            config,
+            server,
+            name,
+            command,
+        } => {
+            let config = load_config(config)?;
+            let server = server
+                .or_else(|| {
+                    config
+                        .as_ref()
+                        .and_then(|cfg| cfg.client.server_addr.parse().ok())
+                })
+                .ok_or_else(|| anyhow::anyhow!("--server is required when --config is not used"))?;
+            let name = config
+                .as_ref()
+                .map(|cfg| cfg.client.name.clone())
+                .unwrap_or(name);
+            debugctl::run(server, name, debug_cli_command(command)).await
+        }
         Command::SimulateRoute {
             config,
             from_screen,
@@ -297,6 +348,14 @@ async fn main() -> Result<()> {
             println!("wrote {}", path.display());
             Ok(())
         }
+    }
+}
+
+fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
+    match command {
+        DebugCliCommand::DisplayInfo => DebugCommand::DisplayInfo,
+        DebugCliCommand::Logs => DebugCommand::RecentLogs,
+        DebugCliCommand::MoveMouse { x, y, dx, dy } => DebugCommand::MoveMouse { x, y, dx, dy },
     }
 }
 

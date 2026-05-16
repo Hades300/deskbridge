@@ -1,9 +1,11 @@
 use crate::input::{EnigoSink, InputSink, LogSink};
 use anyhow::{Context, Result, anyhow};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, EventAck, Hello, Message, Ping, Pong, REPLACED_SESSION_REASON,
-    read_frame, write_frame,
+    DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, EventAck,
+    Hello, InputEvent, InputPacket, Message, Ping, Pong, REPLACED_SESSION_REASON, read_frame,
+    write_frame,
 };
+use std::collections::VecDeque;
 use std::{net::SocketAddr, time::Duration};
 use tokio::{net::TcpStream, time};
 use tracing::{debug, info, warn};
@@ -91,6 +93,8 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     let mut ticker = time::interval(heartbeat);
     let mut seq = 0_u64;
     let mut received_events = 0_u64;
+    let mut debug_state = ClientDebugState::new();
+    debug_state.push(format!("connected to server {}", options.server));
 
     loop {
         tokio::select! {
@@ -118,9 +122,14 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                         sink.apply(&packet).await?;
                         write_frame(&mut stream, &Message::Ack(EventAck { seq: packet.seq })).await?;
                         received_events += 1;
+                        debug_state.push(format!("applied input seq={} event={:?}", packet.seq, packet.event));
                         if options.max_events.is_some_and(|max_events| received_events >= max_events) {
                             return Ok(ClientSessionOutcome::Ended);
                         }
+                    }
+                    Message::DebugRequest(request) => {
+                        let response = handle_debug_request(request, sink.as_mut(), &mut debug_state).await;
+                        write_frame(&mut stream, &Message::DebugResponse(response)).await?;
                     }
                     Message::Status(status) => {
                         warn!(kind = ?status.kind, message = status.message, "server status");
@@ -135,6 +144,129 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                 }
             }
         }
+    }
+}
+
+#[derive(Debug)]
+struct ClientDebugState {
+    logs: VecDeque<String>,
+}
+
+impl ClientDebugState {
+    fn new() -> Self {
+        Self {
+            logs: VecDeque::with_capacity(64),
+        }
+    }
+
+    fn push(&mut self, line: String) {
+        if self.logs.len() == 64 {
+            self.logs.pop_front();
+        }
+        self.logs
+            .push_back(format!("{} {line}", deskbridge_core::now_ms()));
+    }
+
+    fn recent_logs(&self) -> Vec<String> {
+        self.logs.iter().cloned().collect()
+    }
+}
+
+async fn handle_debug_request(
+    request: DebugRequest,
+    sink: &mut dyn InputSink,
+    debug_state: &mut ClientDebugState,
+) -> DebugResponse {
+    debug_state.push(format!("debug request {:?}", request.command));
+    let response = match request.command {
+        DebugCommand::DisplayInfo => match crate::input::display_info() {
+            Ok(info) => DebugResponse {
+                request_id: request.request_id,
+                ok: true,
+                message: "display info read".to_string(),
+                display: Some(DisplaySnapshot {
+                    size: info.size,
+                    location: info.location,
+                }),
+                logs: Vec::new(),
+            },
+            Err(err) => debug_response_error(request.request_id, format!("{err:#}")),
+        },
+        DebugCommand::RecentLogs => DebugResponse {
+            request_id: request.request_id,
+            ok: true,
+            message: "recent client debug log".to_string(),
+            display: None,
+            logs: debug_state.recent_logs(),
+        },
+        DebugCommand::MoveMouse { x, y, dx, dy } => apply_debug_mouse_move(sink, x, y, dx, dy)
+            .await
+            .unwrap_or_else(|err| debug_response_error(request.request_id, format!("{err:#}")))
+            .with_request_id(request.request_id),
+    };
+    debug_state.push(format!("debug response ok={}", response.ok));
+    response
+}
+
+async fn apply_debug_mouse_move(
+    sink: &mut dyn InputSink,
+    x: Option<i32>,
+    y: Option<i32>,
+    dx: i32,
+    dy: i32,
+) -> Result<DebugResponse> {
+    match (x, y) {
+        (Some(x), Some(y)) => {
+            sink.apply(&InputPacket {
+                seq: 0,
+                event: InputEvent::MouseAbs { x, y },
+            })
+            .await?;
+        }
+        (None, None) => {}
+        _ => anyhow::bail!("x and y must be provided together"),
+    }
+
+    if dx != 0 || dy != 0 {
+        sink.apply(&InputPacket {
+            seq: 0,
+            event: InputEvent::MouseMove { dx, dy },
+        })
+        .await?;
+    }
+
+    Ok(DebugResponse {
+        request_id: uuid::Uuid::nil(),
+        ok: true,
+        message: "mouse debug command applied".to_string(),
+        display: crate::input::display_info()
+            .ok()
+            .map(|info| DisplaySnapshot {
+                size: info.size,
+                location: info.location,
+            }),
+        logs: Vec::new(),
+    })
+}
+
+trait DebugResponseRequestId {
+    fn with_request_id(self, request_id: uuid::Uuid) -> Self;
+}
+
+impl DebugResponseRequestId for DebugResponse {
+    fn with_request_id(mut self, request_id: uuid::Uuid) -> Self {
+        self.request_id = request_id;
+        self
+    }
+}
+
+fn debug_response_error(request_id: uuid::Uuid, message: String) -> DebugResponse {
+    DebugResponse {
+        request_id,
+        ok: false,
+        message,
+        display: None,
+        logs: Vec::new(),
     }
 }
 

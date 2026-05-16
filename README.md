@@ -102,6 +102,16 @@ deskbridge diag --config examples/deskbridge.json
 deskbridge display-info
 ```
 
+Send debug commands through the server to the connected Mac client:
+
+```bash
+deskbridge debug --server 192.168.2.5:24800 --name mac display-info
+deskbridge debug --server 192.168.2.5:24800 --name mac move-mouse --dx 20 --dy 0
+deskbridge debug --server 192.168.2.5:24800 --name mac logs
+```
+
+The debug command uses the existing DeskBridge connection, so the Mac does not need to open an inbound port. `display-info` returns the target display and pointer location, `move-mouse` runs the same target-side input path as normal remote control, and `logs` returns recent target-side debug entries for the active client session.
+
 Simulate a configured edge crossing without moving the real mouse:
 
 ```bash

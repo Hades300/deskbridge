@@ -71,11 +71,48 @@ cleanup() {
   if [[ -n "${RECONNECT_CLIENT_PID:-}" ]]; then
     kill "$RECONNECT_CLIENT_PID" >/dev/null 2>&1 || true
   fi
+  if [[ -n "${DEBUG_SERVER_PID:-}" ]]; then
+    kill "$DEBUG_SERVER_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${DEBUG_CLIENT_PID:-}" ]]; then
+    kill "$DEBUG_CLIENT_PID" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 sleep 1
 "$ROOT/target/debug/deskbridge" diag --server 127.0.0.1:24881 --name mac
 "$ROOT/target/debug/deskbridge" client --server 127.0.0.1:24881 --name mac --dry-run --max-events 1 --once >"$CLIENT_LOG" 2>&1
+
+echo "== Debug control test =="
+DEBUG_SERVER_LOG="$(mktemp /tmp/deskbridge-debug-server.XXXXXX)"
+DEBUG_CLIENT_LOG="$(mktemp /tmp/deskbridge-debug-client.XXXXXX)"
+DEBUG_DISPLAY_OUT="$(mktemp /tmp/deskbridge-debug-display.XXXXXX)"
+DEBUG_MOVE_OUT="$(mktemp /tmp/deskbridge-debug-move.XXXXXX)"
+DEBUG_LOGS_OUT="$(mktemp /tmp/deskbridge-debug-logs.XXXXXX)"
+RUST_LOG=info "$ROOT/target/debug/deskbridge" server --listen 127.0.0.1:24883 --allow mac >"$DEBUG_SERVER_LOG" 2>&1 &
+DEBUG_SERVER_PID=$!
+sleep 0.5
+RUST_LOG=info "$ROOT/target/debug/deskbridge" client --server 127.0.0.1:24883 --name mac --dry-run --once >"$DEBUG_CLIENT_LOG" 2>&1 &
+DEBUG_CLIENT_PID=$!
+sleep 0.8
+"$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac display-info >"$DEBUG_DISPLAY_OUT"
+"$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac move-mouse --dx 1 --dy 0 >"$DEBUG_MOVE_OUT"
+"$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac logs >"$DEBUG_LOGS_OUT"
+if ! grep -q "display:" "$DEBUG_DISPLAY_OUT"; then
+  cat "$DEBUG_DISPLAY_OUT"
+  echo "debug display-info did not return display data"
+  exit 1
+fi
+if ! grep -q "ok: true" "$DEBUG_MOVE_OUT"; then
+  cat "$DEBUG_MOVE_OUT"
+  echo "debug move-mouse did not succeed"
+  exit 1
+fi
+if ! grep -q "debug request" "$DEBUG_LOGS_OUT"; then
+  cat "$DEBUG_LOGS_OUT"
+  echo "debug logs did not include target-side debug entries"
+  exit 1
+fi
 
 echo "== Reconnect after server start test =="
 RECONNECT_SERVER_LOG="$(mktemp /tmp/deskbridge-reconnect-server.XXXXXX)"

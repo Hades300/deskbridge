@@ -1,14 +1,17 @@
 use crate::capture::CaptureEvent;
 use anyhow::{Context, Result};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, Edge, FrameError, Hello, InputEvent, InputPacket, InputRouter, Layout,
-    Message, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome, read_frame, write_frame,
+    DEFAULT_HEARTBEAT_MS, DebugRequest, DebugResponse, Edge, FrameError, Hello, InputEvent,
+    InputPacket, InputRouter, Layout, Message, REPLACED_SESSION_REASON, Size, Status, StatusKind,
+    Welcome, read_frame, write_frame,
 };
-use std::{collections::HashMap, collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, collections::HashSet, io, net::SocketAddr, sync::Arc, time::Duration,
+};
 use tokio::{
     net::TcpListener,
     net::TcpStream,
-    sync::{Mutex, mpsc},
+    sync::{Mutex, mpsc, oneshot},
     time,
 };
 use tracing::{debug, info, warn};
@@ -31,6 +34,13 @@ type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
 struct SessionHandle {
     session_id: Uuid,
     shutdown_tx: mpsc::UnboundedSender<()>,
+    debug_tx: mpsc::UnboundedSender<DebugEnvelope>,
+}
+
+#[derive(Debug)]
+struct DebugEnvelope {
+    request: DebugRequest,
+    response_tx: oneshot::Sender<DebugResponse>,
 }
 
 pub async fn run(options: ServerOptions) -> Result<()> {
@@ -195,16 +205,18 @@ async fn handle_client(
             "diagnostic client accepted"
         );
         write_frame(&mut stream, &welcome).await?;
-        return Ok(());
+        return handle_diagnostic_session(&mut stream, &hello.screen_name, sessions).await;
     }
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
+    let (debug_tx, mut debug_rx) = mpsc::unbounded_channel();
     let session_key = hello.screen_name.to_ascii_lowercase();
     if let Some(previous) = sessions.lock().await.insert(
         session_key.clone(),
         SessionHandle {
             session_id,
             shutdown_tx,
+            debug_tx,
         },
     ) {
         let _ = previous.shutdown_tx.send(());
@@ -226,6 +238,7 @@ async fn handle_client(
         &options,
         &hello.screen_name,
         &mut shutdown_rx,
+        &mut debug_rx,
         capture_tx,
     )
     .await;
@@ -238,6 +251,7 @@ async fn run_client_session(
     options: &ServerOptions,
     client_name: &str,
     shutdown_rx: &mut mpsc::UnboundedReceiver<()>,
+    debug_rx: &mut mpsc::UnboundedReceiver<DebugEnvelope>,
     capture_tx: crate::capture::CaptureSender,
 ) -> Result<()> {
     let mut ticker = time::interval(Duration::from_secs(5));
@@ -245,6 +259,7 @@ async fn run_client_session(
     let mut demo_stage = 0_u64;
     let mut demo_router = InputRouter::new(options.layout.clone(), options.name.clone()).ok();
     let mut capture_rx = capture_tx.subscribe();
+    let mut pending_debug = HashMap::<Uuid, oneshot::Sender<DebugResponse>>::new();
 
     loop {
         tokio::select! {
@@ -280,6 +295,17 @@ async fn run_client_session(
                 }).await;
                 return Ok(());
             }
+            Some(debug) = debug_rx.recv() => {
+                let request_id = debug.request.request_id;
+                if let Err(err) = write_frame(&mut stream, &Message::DebugRequest(debug.request)).await {
+                    let _ = debug.response_tx.send(debug_error_response(
+                        request_id,
+                        format!("failed to send debug request to client: {err}"),
+                    ));
+                    return Err(err.into());
+                }
+                pending_debug.insert(request_id, debug.response_tx);
+            }
             msg = read_frame(&mut stream) => {
                 match msg? {
                     Message::Ping(ping) => {
@@ -290,6 +316,13 @@ async fn run_client_session(
                     }
                     Message::Pong(pong) => debug!(seq = pong.seq, "client pong"),
                     Message::Ack(ack) => debug!(seq = ack.seq, "input event acknowledged"),
+                    Message::DebugResponse(response) => {
+                        if let Some(response_tx) = pending_debug.remove(&response.request_id) {
+                            let _ = response_tx.send(response);
+                        } else {
+                            debug!(request_id = %response.request_id, "unexpected debug response");
+                        }
+                    }
                     Message::Goodbye { reason } => {
                         info!(reason, "client goodbye");
                         return Ok(());
@@ -298,6 +331,115 @@ async fn run_client_session(
                 }
             }
         }
+    }
+}
+
+async fn handle_diagnostic_session(
+    stream: &mut TcpStream,
+    target_screen: &str,
+    sessions: SessionRegistry,
+) -> Result<()> {
+    match time::timeout(Duration::from_secs(5), read_frame(stream)).await {
+        Ok(Ok(Message::DebugRequest(request))) => {
+            forward_debug_request(stream, target_screen, sessions, request).await
+        }
+        Ok(Ok(other)) => {
+            write_frame(
+                stream,
+                &Message::Status(Status {
+                    kind: StatusKind::Error,
+                    message: format!("expected debug request, got {other:?}"),
+                }),
+            )
+            .await?;
+            Ok(())
+        }
+        Ok(Err(FrameError::Io(err))) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
+        Ok(Err(err)) => Err(err.into()),
+        Err(_) => Ok(()),
+    }
+}
+
+async fn forward_debug_request(
+    stream: &mut TcpStream,
+    target_screen: &str,
+    sessions: SessionRegistry,
+    request: DebugRequest,
+) -> Result<()> {
+    let session_key = target_screen.to_ascii_lowercase();
+    let debug_tx = {
+        let sessions = sessions.lock().await;
+        sessions
+            .get(&session_key)
+            .map(|session| session.debug_tx.clone())
+    };
+
+    let Some(debug_tx) = debug_tx else {
+        write_frame(
+            stream,
+            &Message::Status(Status {
+                kind: StatusKind::Error,
+                message: format!("target client '{target_screen}' is not connected"),
+            }),
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let request_id = request.request_id;
+    let (response_tx, response_rx) = oneshot::channel();
+    if debug_tx
+        .send(DebugEnvelope {
+            request,
+            response_tx,
+        })
+        .is_err()
+    {
+        write_frame(
+            stream,
+            &Message::Status(Status {
+                kind: StatusKind::Error,
+                message: format!("target client '{target_screen}' is no longer available"),
+            }),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    match time::timeout(Duration::from_secs(5), response_rx).await {
+        Ok(Ok(response)) => write_frame(stream, &Message::DebugResponse(response)).await?,
+        Ok(Err(_)) => {
+            write_frame(
+                stream,
+                &Message::DebugResponse(debug_error_response(
+                    request_id,
+                    "debug response channel closed".to_string(),
+                )),
+            )
+            .await?;
+        }
+        Err(_) => {
+            write_frame(
+                stream,
+                &Message::DebugResponse(debug_error_response(
+                    request_id,
+                    "debug request timed out".to_string(),
+                )),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn debug_error_response(request_id: Uuid, message: String) -> DebugResponse {
+    DebugResponse {
+        request_id,
+        ok: false,
+        message,
+        display: None,
+        logs: Vec::new(),
     }
 }
 
@@ -446,7 +588,9 @@ fn sample_point_on_edge(layout: &Layout, screen_name: &str, edge: Edge) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deskbridge_core::{Link, Ping, Screen, Size};
+    use deskbridge_core::{
+        DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, Link, Ping, Screen, Size,
+    };
 
     fn test_layout() -> Layout {
         Layout {
@@ -549,6 +693,105 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(response, Message::Pong(pong) if pong.seq == 7));
+    }
+
+    #[tokio::test]
+    async fn diagnostic_debug_request_is_forwarded_to_input_client() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let options = test_options(listen);
+        let allow = HashSet::from(["mac".to_string()]);
+        let (capture_tx, _) = crate::capture::channel();
+        let sessions = SessionRegistry::default();
+
+        tokio::spawn({
+            let options = options.clone();
+            let allow = allow.clone();
+            let capture_tx = capture_tx.clone();
+            let sessions = sessions.clone();
+            async move {
+                for _ in 0..2 {
+                    let (stream, peer) = listener.accept().await.unwrap();
+                    tokio::spawn(handle_client(
+                        stream,
+                        peer,
+                        options.clone(),
+                        allow.clone(),
+                        capture_tx.clone(),
+                        sessions.clone(),
+                    ));
+                }
+            }
+        });
+
+        let mut client = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut client, &Message::Hello(Hello::client("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut client).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let mut diag = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut diag, &Message::Hello(Hello::diagnostic("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut diag).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let request_id = Uuid::new_v4();
+        write_frame(
+            &mut diag,
+            &Message::DebugRequest(DebugRequest {
+                request_id,
+                command: DebugCommand::DisplayInfo,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let forwarded = tokio::time::timeout(Duration::from_secs(1), read_frame(&mut client))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(forwarded, Message::DebugRequest(DebugRequest { request_id: id, command: DebugCommand::DisplayInfo }) if id == request_id)
+        );
+
+        write_frame(
+            &mut client,
+            &Message::DebugResponse(DebugResponse {
+                request_id,
+                ok: true,
+                message: "display info read".to_string(),
+                display: Some(DisplaySnapshot {
+                    size: Size {
+                        width: 1728,
+                        height: 1117,
+                    },
+                    location: Some((10, 20)),
+                }),
+                logs: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = tokio::time::timeout(Duration::from_secs(1), read_frame(&mut diag))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            response,
+            Message::DebugResponse(DebugResponse {
+                request_id: id,
+                ok: true,
+                ..
+            }) if id == request_id
+        ));
     }
 
     #[tokio::test]

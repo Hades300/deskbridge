@@ -74,6 +74,18 @@ The server separates capture from transport:
 
 On Windows, `deskbridge server --capture` installs low-level mouse and keyboard hooks. On macOS, it installs a listen-only CoreGraphics event tap and requires Accessibility plus Input Monitoring permissions. `--demo-events` remains the portable loopback verifier when platform capture is not available.
 
+## Debug Control Path
+
+Diagnostic sessions can send `DebugRequest` messages to the server. The server forwards those requests over the already-connected client session and returns the client's `DebugResponse` to the diagnostic caller.
+
+The first supported commands are:
+
+- `display-info`: read the target client's display size and current pointer location.
+- `move-mouse`: run a target-side mouse injection test through the same input sink used for normal remote control.
+- `logs`: return recent target-side debug entries kept in the active client session.
+
+This keeps the Mac client outbound-only: debug operations do not require opening a listener on the Mac.
+
 ## Clean-Room Note
 
 Input Leap is useful prior art, but DeskBridge should not copy its implementation if we want license flexibility. The current code only implements behavior from first principles.

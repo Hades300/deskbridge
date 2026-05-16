@@ -116,6 +116,23 @@ jobs:
           ./target/debug/deskbridge diag --server 127.0.0.1:24881 --name mac
           ./target/debug/deskbridge client --server 127.0.0.1:24881 --name mac --dry-run --max-events 1 --once
 
+      - name: Debug control test
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUST_LOG=info ./target/debug/deskbridge server --listen 127.0.0.1:24883 --allow mac >debug-server.log 2>&1 &
+          SERVER_PID=$!
+          RUST_LOG=info ./target/debug/deskbridge client --server 127.0.0.1:24883 --name mac --dry-run --once >debug-client.log 2>&1 &
+          CLIENT_PID=$!
+          trap 'kill "$SERVER_PID" "$CLIENT_PID" 2>/dev/null || true' EXIT
+          sleep 1
+          ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac display-info >debug-display.out
+          ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac move-mouse --dx 1 --dy 0 >debug-move.out
+          ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac logs >debug-logs.out
+          grep -q "display:" debug-display.out
+          grep -q "ok: true" debug-move.out
+          grep -q "debug request" debug-logs.out
+
       - name: Reconnect after server start test
         shell: bash
         run: |

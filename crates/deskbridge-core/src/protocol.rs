@@ -161,6 +161,47 @@ pub struct InputPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DebugCommand {
+    DisplayInfo,
+    RecentLogs,
+    MoveMouse {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<i32>,
+        #[serde(default)]
+        dx: i32,
+        #[serde(default)]
+        dy: i32,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DebugRequest {
+    pub request_id: Uuid,
+    pub command: DebugCommand,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DisplaySnapshot {
+    pub size: Size,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<(i32, i32)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DebugResponse {
+    pub request_id: Uuid,
+    pub ok: bool,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<DisplaySnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusKind {
     Info,
@@ -183,6 +224,8 @@ pub enum Message {
     Pong(Pong),
     Input(InputPacket),
     Ack(EventAck),
+    DebugRequest(DebugRequest),
+    DebugResponse(DebugResponse),
     Status(Status),
     Goodbye { reason: String },
 }
@@ -227,5 +270,21 @@ mod tests {
                 height: 982,
             })
         );
+    }
+
+    #[test]
+    fn debug_messages_round_trip() {
+        let request = Message::DebugRequest(DebugRequest {
+            request_id: Uuid::new_v4(),
+            command: DebugCommand::MoveMouse {
+                x: Some(10),
+                y: Some(20),
+                dx: 3,
+                dy: -4,
+            },
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(request, decoded);
     }
 }
