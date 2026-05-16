@@ -12,7 +12,7 @@ pub enum FrameError {
     #[error("invalid frame length {0}")]
     InvalidLength(usize),
     #[error(
-        "unsupported protocol handshake '{magic}'; this appears to be Input Leap/Synergy/Barrier traffic, not DeskBridge"
+        "unsupported protocol bytes '{magic}'; expected DeskBridge framed JSON. If this appears after 'client accepted', another or old client is writing unframed JSON, Input Leap, Synergy, or Barrier traffic to this port"
     )]
     ForeignProtocol { magic: String },
     #[error("json error: {0}")]

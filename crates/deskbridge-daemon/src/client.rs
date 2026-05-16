@@ -59,11 +59,8 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
         .with_context(|| format!("failed to connect {}", options.server))?;
     stream.set_nodelay(true)?;
 
-    write_frame(
-        &mut stream,
-        &Message::Hello(Hello::client(options.name.clone())),
-    )
-    .await?;
+    let hello = client_hello(options);
+    write_frame(&mut stream, &Message::Hello(hello)).await?;
 
     let welcome = read_frame(&mut stream).await?;
     let heartbeat_ms = match welcome {
@@ -134,6 +131,28 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                     other => debug!(message = ?other, "ignored message"),
                 }
             }
+        }
+    }
+}
+
+fn client_hello(options: &ClientOptions) -> Hello {
+    let hello = Hello::client(options.name.clone());
+    if options.dry_run {
+        return hello;
+    }
+
+    match crate::input::display_info() {
+        Ok(info) => {
+            info!(
+                width = info.size.width,
+                height = info.size.height,
+                "including client display size in handshake"
+            );
+            hello.with_screen_size(info.size)
+        }
+        Err(err) => {
+            warn!(error = %err, "could not include client display size in handshake");
+            hello
         }
     }
 }

@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use deskbridge_core::{Button, InputEvent, InputPacket, KeyState};
+use deskbridge_core::{Button, InputEvent, InputPacket, KeyState, Size};
 use tracing::{info, warn};
 
 #[async_trait]
@@ -22,6 +22,12 @@ pub struct EnigoSink {
     enigo: enigo::Enigo,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayInfo {
+    pub size: Size,
+    pub location: Option<(i32, i32)>,
+}
+
 impl EnigoSink {
     pub fn new() -> Result<Self> {
         let settings = enigo::Settings::default();
@@ -29,6 +35,32 @@ impl EnigoSink {
             .map_err(|err| anyhow!("failed to initialize input injection: {err}"))?;
         Ok(Self { enigo })
     }
+}
+
+pub fn display_info() -> Result<DisplayInfo> {
+    use enigo::Mouse;
+
+    let settings = enigo::Settings::default();
+    let enigo = enigo::Enigo::new(&settings)
+        .map_err(|err| anyhow!("failed to initialize input inspection: {err}"))?;
+    let (width, height) = enigo
+        .main_display()
+        .map_err(|err| anyhow!("failed to read main display size: {err}"))?;
+    let location = enigo.location().ok();
+
+    if width <= 0 || height <= 0 {
+        return Err(anyhow!(
+            "main display returned invalid size {width}x{height}"
+        ));
+    }
+
+    Ok(DisplayInfo {
+        size: Size {
+            width: width as u32,
+            height: height as u32,
+        },
+        location,
+    })
 }
 
 #[async_trait]

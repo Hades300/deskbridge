@@ -97,6 +97,7 @@ Run diagnostics:
 ```bash
 deskbridge diag --server 192.168.2.5:24800 --name mac
 deskbridge diag --config examples/deskbridge.json
+deskbridge display-info
 ```
 
 Simulate a configured edge crossing without moving the real mouse:
@@ -106,6 +107,7 @@ deskbridge simulate-route --config examples/deskbridge.json --steps 3 --dx 80 --
 ```
 
 Expected output starts with a `MouseAbs` event that lands on the linked Mac edge, followed by repeated `MouseMove` events still targeted at `mac`.
+When a real client connects, DeskBridge includes the client display size in the handshake so the server can map the crossing height to the actual Mac screen instead of a default size.
 
 Use `--dry-run` on the client to validate the protocol without injecting input.
 

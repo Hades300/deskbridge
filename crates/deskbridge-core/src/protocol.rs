@@ -1,3 +1,4 @@
+use crate::Size;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -38,6 +39,8 @@ pub struct Hello {
     pub role: Role,
     pub crypto: CryptoMode,
     pub capabilities: Vec<Capability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_size: Option<Size>,
 }
 
 impl Hello {
@@ -54,6 +57,7 @@ impl Hello {
                 Capability::Diagnostics,
                 Capability::LayoutV1,
             ],
+            screen_size: None,
         }
     }
 
@@ -65,6 +69,7 @@ impl Hello {
             role: Role::Client,
             crypto: CryptoMode::None,
             capabilities: vec![Capability::Diagnostics],
+            screen_size: None,
         }
     }
 
@@ -81,11 +86,17 @@ impl Hello {
                 Capability::Diagnostics,
                 Capability::LayoutV1,
             ],
+            screen_size: None,
         }
     }
 
     pub fn is_input_client(&self) -> bool {
         self.role == Role::Client && self.capabilities.contains(&Capability::InputInject)
+    }
+
+    pub fn with_screen_size(mut self, screen_size: Size) -> Self {
+        self.screen_size = Some(screen_size);
+        self
     }
 }
 
@@ -199,5 +210,22 @@ mod tests {
     fn diagnostic_hello_is_not_an_input_session() {
         assert!(Hello::client("mac").is_input_client());
         assert!(!Hello::diagnostic("mac").is_input_client());
+    }
+
+    #[test]
+    fn client_hello_can_include_screen_size() {
+        let hello = Hello::client("mac").with_screen_size(Size {
+            width: 1512,
+            height: 982,
+        });
+        let encoded = serde_json::to_string(&hello).unwrap();
+        let decoded: Hello = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            decoded.screen_size,
+            Some(Size {
+                width: 1512,
+                height: 982,
+            })
+        );
     }
 }

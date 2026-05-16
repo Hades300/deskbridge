@@ -2,7 +2,7 @@ use crate::capture::CaptureEvent;
 use anyhow::{Context, Result};
 use deskbridge_core::{
     DEFAULT_HEARTBEAT_MS, Edge, FrameError, Hello, InputEvent, InputPacket, InputRouter, Layout,
-    Message, REPLACED_SESSION_REASON, Status, StatusKind, Welcome, read_frame, write_frame,
+    Message, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome, read_frame, write_frame,
 };
 use std::{collections::HashMap, collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
@@ -25,7 +25,13 @@ pub struct ServerOptions {
     pub layout: Layout,
 }
 
-type SessionRegistry = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<()>>>>;
+type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
+
+#[derive(Debug)]
+struct SessionHandle {
+    session_id: Uuid,
+    shutdown_tx: mpsc::UnboundedSender<()>,
+}
 
 pub async fn run(options: ServerOptions) -> Result<()> {
     let options = apply_platform_layout(options);
@@ -87,10 +93,37 @@ fn apply_platform_layout(options: ServerOptions) -> ServerOptions {
     options
 }
 
+fn apply_client_screen_size(options: &mut ServerOptions, hello: &Hello) {
+    let Some(size) = hello.screen_size else {
+        return;
+    };
+    if size.width == 0 || size.height == 0 {
+        return;
+    }
+
+    if let Some(screen) = options
+        .layout
+        .screens
+        .iter_mut()
+        .find(|screen| screen.name == hello.screen_name)
+    {
+        screen.size = Size {
+            width: size.width,
+            height: size.height,
+        };
+        info!(
+            screen = hello.screen_name,
+            width = size.width,
+            height = size.height,
+            "using client-reported screen size for routing"
+        );
+    }
+}
+
 async fn handle_client(
     mut stream: TcpStream,
     peer: SocketAddr,
-    options: ServerOptions,
+    mut options: ServerOptions,
     allow: HashSet<String>,
     capture_tx: crate::capture::CaptureSender,
     sessions: SessionRegistry,
@@ -121,9 +154,13 @@ async fn handle_client(
     };
 
     validate_client(&hello, &allow, &mut stream).await?;
+    if hello.is_input_client() {
+        apply_client_screen_size(&mut options, &hello);
+    }
 
+    let session_id = Uuid::new_v4();
     let welcome = Message::Welcome(Welcome {
-        session_id: Uuid::new_v4(),
+        session_id,
         server_name: options.name.clone(),
         heartbeat_interval_ms: options.heartbeat_ms.max(DEFAULT_HEARTBEAT_MS),
         layout_revision: 1,
@@ -143,11 +180,19 @@ async fn handle_client(
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
     let session_key = hello.screen_name.to_ascii_lowercase();
-    if let Some(previous) = sessions.lock().await.insert(session_key, shutdown_tx) {
-        let _ = previous.send(());
+    if let Some(previous) = sessions.lock().await.insert(
+        session_key.clone(),
+        SessionHandle {
+            session_id,
+            shutdown_tx,
+        },
+    ) {
+        let _ = previous.shutdown_tx.send(());
         warn!(
             peer = %peer,
             screen = hello.screen_name,
+            previous_session = %previous.session_id,
+            new_session = %session_id,
             "replaced existing client session for screen"
         );
     }
@@ -156,6 +201,25 @@ async fn handle_client(
 
     write_frame(&mut stream, &welcome).await?;
 
+    let result = run_client_session(
+        &mut stream,
+        &options,
+        &hello.screen_name,
+        &mut shutdown_rx,
+        capture_tx,
+    )
+    .await;
+    remove_current_session(&sessions, &session_key, session_id).await;
+    result
+}
+
+async fn run_client_session(
+    mut stream: &mut TcpStream,
+    options: &ServerOptions,
+    client_name: &str,
+    shutdown_rx: &mut mpsc::UnboundedReceiver<()>,
+    capture_tx: crate::capture::CaptureSender,
+) -> Result<()> {
     let mut ticker = time::interval(Duration::from_secs(5));
     let mut seq = 0_u64;
     let mut demo_stage = 0_u64;
@@ -170,7 +234,7 @@ async fn handle_client(
                     &mut demo_router,
                     &options.layout,
                     &options.name,
-                    &hello.screen_name,
+                    client_name,
                     demo_stage,
                 );
                 demo_stage += 1;
@@ -181,7 +245,7 @@ async fn handle_client(
             }
             event = capture_rx.recv(), if options.capture => {
                 if let Ok(event) = event
-                    && let Some(event) = route_capture_event(&mut demo_router, event, &hello.screen_name)
+                    && let Some(event) = route_capture_event(&mut demo_router, event, client_name)
                 {
                     seq += 1;
                     write_frame(&mut stream, &Message::Input(InputPacket {
@@ -214,6 +278,16 @@ async fn handle_client(
                 }
             }
         }
+    }
+}
+
+async fn remove_current_session(sessions: &SessionRegistry, session_key: &str, session_id: Uuid) {
+    let mut sessions = sessions.lock().await;
+    if sessions
+        .get(session_key)
+        .is_some_and(|session| session.session_id == session_id)
+    {
+        sessions.remove(session_key);
     }
 }
 
@@ -291,7 +365,24 @@ fn route_capture_event(
     client_name: &str,
 ) -> Option<InputEvent> {
     let routed = match event {
-        CaptureEvent::LocalPointer { x, y } => router.as_mut()?.observe_local_pointer(x, y)?,
+        CaptureEvent::LocalPointer { x, y } => {
+            let routed = router.as_mut()?.observe_local_pointer(x, y)?;
+            if let InputEvent::MouseAbs {
+                x: target_x,
+                y: target_y,
+            } = routed.event
+            {
+                info!(
+                    source_x = x,
+                    source_y = y,
+                    target = %routed.target_screen,
+                    target_x,
+                    target_y,
+                    "activated remote screen from local pointer edge"
+                );
+            }
+            routed
+        }
         CaptureEvent::Input(event) => router.as_ref()?.route_if_remote_active(event)?,
     };
     (routed.target_screen == client_name).then_some(routed.event)
@@ -433,5 +524,74 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(response, Message::Pong(pong) if pong.seq == 7));
+    }
+
+    #[tokio::test]
+    async fn ended_client_session_is_removed_from_registry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let options = test_options(listen);
+        let allow = HashSet::from(["mac".to_string()]);
+        let (capture_tx, _) = crate::capture::channel();
+        let sessions = SessionRegistry::default();
+
+        let server_task = tokio::spawn({
+            let sessions = sessions.clone();
+            async move {
+                let (stream, peer) = listener.accept().await.unwrap();
+                handle_client(stream, peer, options, allow, capture_tx, sessions)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let mut client = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut client, &Message::Hello(Hello::client("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut client).await.unwrap(),
+            Message::Welcome(_)
+        ));
+        write_frame(
+            &mut client,
+            &Message::Goodbye {
+                reason: "test complete".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(sessions.lock().await.is_empty());
+    }
+
+    #[test]
+    fn client_reported_screen_size_updates_routing_layout() {
+        let listen = "127.0.0.1:0".parse().unwrap();
+        let mut options = test_options(listen);
+        let hello = Hello::client("mac").with_screen_size(Size {
+            width: 1512,
+            height: 982,
+        });
+
+        apply_client_screen_size(&mut options, &hello);
+
+        let mac = options
+            .layout
+            .screens
+            .iter()
+            .find(|screen| screen.name == "mac")
+            .unwrap();
+        assert_eq!(
+            mac.size,
+            Size {
+                width: 1512,
+                height: 982,
+            }
+        );
     }
 }

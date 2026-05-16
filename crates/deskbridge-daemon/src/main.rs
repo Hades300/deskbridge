@@ -87,6 +87,8 @@ enum Command {
         #[arg(long, default_value_t = false)]
         prompt: bool,
     },
+    /// Print the display size and mouse location seen by DeskBridge.
+    DisplayInfo,
     /// Create a default JSON config file.
     InitConfig {
         #[arg(long, default_value = "deskbridge.json")]
@@ -230,6 +232,17 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Permissions { prompt } => permissions::run(prompt),
+        Command::DisplayInfo => {
+            let info = input::display_info()?;
+            println!("DeskBridge display info");
+            println!("main_display: {}x{}", info.size.width, info.size.height);
+            if let Some((x, y)) = info.location {
+                println!("mouse_location: x={x} y={y}");
+            } else {
+                println!("mouse_location: unavailable");
+            }
+            Ok(())
+        }
         Command::InitConfig { path } => {
             DeskBridgeConfig::default().save(&path)?;
             println!("wrote {}", path.display());
