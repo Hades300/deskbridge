@@ -13,7 +13,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
-using System.Windows.Shapes;
 
 namespace DeskBridge.Admin;
 
@@ -1664,7 +1663,7 @@ internal static class PortalFlashOverlay
         };
         chrome.Children.Add(halo);
 
-        var core = new Ellipse
+        var core = new System.Windows.Shapes.Ellipse
         {
             Width = 16,
             Height = 16,
