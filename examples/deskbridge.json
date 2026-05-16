@@ -1,0 +1,40 @@
+{
+  "server": {
+    "name": "windows",
+    "listen": "0.0.0.0:24800"
+  },
+  "client": {
+    "name": "mac",
+    "server_addr": "192.168.2.5:24800"
+  },
+  "layout": {
+    "screens": [
+      {
+        "name": "windows",
+        "size": {
+          "width": 1920,
+          "height": 1080
+        }
+      },
+      {
+        "name": "mac",
+        "size": {
+          "width": 1728,
+          "height": 1117
+        }
+      }
+    ],
+    "links": [
+      {
+        "from": "windows",
+        "edge": "right",
+        "to": "mac"
+      }
+    ]
+  },
+  "reliability": {
+    "heartbeat_ms": 2000,
+    "reconnect_max_ms": 10000,
+    "stale_after_ms": 6000
+  }
+}

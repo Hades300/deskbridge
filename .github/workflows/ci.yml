@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust format
+        run: cargo fmt --all --check
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  windows-arm-cross:
+    name: Windows ARM64 Rust check
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+          components: clippy
+
+      - name: Check Windows ARM64 target
+        run: cargo check --target aarch64-pc-windows-msvc -p deskbridge
+
+      - name: Clippy Windows ARM64 target
+        run: cargo clippy --target aarch64-pc-windows-msvc -p deskbridge --all-targets -- -D warnings
+
+  windows-admin:
+    name: Windows WPF admin
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore apps/windows/DeskBridge.Admin/DeskBridge.Admin.csproj
+
+      - name: Build
+        run: dotnet build apps/windows/DeskBridge.Admin/DeskBridge.Admin.csproj --configuration Release --no-restore
+
+  macos-app:
+    name: macOS app package
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and package macOS app
+        run: ./scripts/package-macos-app.sh
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeskBridge.app
+          path: build/DeskBridge.app
+
+  loopback:
+    name: Protocol loopback
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Loopback protocol test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/debug/deskbridge server --listen 127.0.0.1:24881 --allow mac --demo-events >server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          sleep 1
+          ./target/debug/deskbridge diag --server 127.0.0.1:24881 --name mac
+          ./target/debug/deskbridge client --server 127.0.0.1:24881 --name mac --dry-run --max-events 1 --once

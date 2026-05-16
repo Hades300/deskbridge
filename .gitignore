@@ -1,0 +1,9 @@
+/target/
+/build/
+/.swiftpm/
+/apps/macos/.build/
+*.log
+.DS_Store
+bin/
+obj/
+
