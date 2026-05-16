@@ -729,6 +729,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut pending_capture_probes = HashMap::<Uuid, PendingCaptureProbe>::new();
     let mut capture_probe_seq_index = HashMap::<u64, Uuid>::new();
     let mut perf = ServerPerfMetrics::new();
+    let mut last_unrouted_capture_log_ms = 0_u128;
 
     loop {
         tokio::select! {
@@ -768,16 +769,25 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     if probe_id.is_none()
                         && let Some(capture_log_line) = capture_log_line
                     {
-                        let route_log_line = routed
-                            .as_ref()
-                            .map(|event| format!("routed target={client_name} {}", describe_input_event(event)))
-                            .unwrap_or_else(|| "not routed".to_string());
-                        push_server_log(
-                            &server_log,
-                            format!(
-                                "capture session={session_id} peer={peer} source={capture_log_line} {route_log_line}"
-                            ),
-                        );
+                        let now_ms = deskbridge_core::now_ms();
+                        let routed_to_client = routed.is_some();
+                        let should_log = routed_to_client
+                            || now_ms.saturating_sub(last_unrouted_capture_log_ms) >= 250;
+                        if should_log {
+                            if !routed_to_client {
+                                last_unrouted_capture_log_ms = now_ms;
+                            }
+                            let route_log_line = routed
+                                .as_ref()
+                                .map(|event| format!("routed target={client_name} {}", describe_input_event(event)))
+                                .unwrap_or_else(|| "not routed".to_string());
+                            push_server_log(
+                                &server_log,
+                                format!(
+                                    "capture session={session_id} peer={peer} source={capture_log_line} {route_log_line}"
+                                ),
+                            );
+                        }
                     }
 
                     if let Some(request_id) = probe_id

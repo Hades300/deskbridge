@@ -63,8 +63,10 @@ where
         return Err(FrameError::InvalidLength(bytes.len()));
     }
 
-    writer.write_u32(bytes.len() as u32).await?;
-    writer.write_all(&bytes).await?;
+    let mut frame = Vec::with_capacity(4 + bytes.len());
+    frame.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&bytes);
+    writer.write_all(&frame).await?;
     writer.flush().await?;
     Ok(())
 }

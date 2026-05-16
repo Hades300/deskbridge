@@ -20,6 +20,7 @@ impl InputSink for LogSink {
 
 pub struct EnigoSink {
     enigo: enigo::Enigo,
+    cursor_pos: Option<(i32, i32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +34,10 @@ impl EnigoSink {
         let settings = enigo::Settings::default();
         let enigo = enigo::Enigo::new(&settings)
             .map_err(|err| anyhow!("failed to initialize input injection: {err}"))?;
-        Ok(Self { enigo })
+        Ok(Self {
+            enigo,
+            cursor_pos: None,
+        })
     }
 
     pub fn move_mouse_rel_evented_for_diagnostics(&mut self, dx: i32, dy: i32) -> Result<()> {
@@ -79,8 +83,12 @@ impl InputSink for EnigoSink {
         macos_declare_user_activity();
 
         match &packet.event {
-            InputEvent::MouseMove { dx, dy } => move_mouse_rel(&mut self.enigo, *dx, *dy)?,
-            InputEvent::MouseAbs { x, y } => move_mouse_abs(&mut self.enigo, *x, *y)?,
+            InputEvent::MouseMove { dx, dy } => {
+                move_mouse_rel(&mut self.enigo, &mut self.cursor_pos, *dx, *dy)?
+            }
+            InputEvent::MouseAbs { x, y } => {
+                move_mouse_abs(&mut self.enigo, &mut self.cursor_pos, *x, *y)?
+            }
             InputEvent::MouseButton { button, state } => self
                 .enigo
                 .button(map_button(*button), map_direction(*state))
@@ -162,56 +170,88 @@ fn macos_declare_user_activity() {
 #[cfg(not(target_os = "macos"))]
 fn macos_declare_user_activity() {}
 
-fn move_mouse_rel(enigo: &mut enigo::Enigo, dx: i32, dy: i32) -> Result<()> {
+fn move_mouse_rel(
+    enigo: &mut enigo::Enigo,
+    cursor_pos: &mut Option<(i32, i32)>,
+    dx: i32,
+    dy: i32,
+) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         use enigo::Mouse;
 
-        let (x, y) = enigo
-            .location()
-            .map_err(|err| anyhow!("failed to read mouse location: {err}"))?;
-        macos_warp_mouse(x.saturating_add(dx), y.saturating_add(dy))
+        let (x, y) = match *cursor_pos {
+            Some(pos) => pos,
+            None => enigo
+                .location()
+                .map_err(|err| anyhow!("failed to read mouse location: {err}"))?,
+        };
+        *cursor_pos = Some(macos_warp_mouse(
+            x.saturating_add(dx),
+            y.saturating_add(dy),
+        )?);
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         use enigo::{Coordinate, Mouse};
-        enigo
+        let result = enigo
             .move_mouse(dx, dy, Coordinate::Rel)
-            .map_err(|err| anyhow!("mouse move failed: {err}"))
+            .map_err(|err| anyhow!("mouse move failed: {err}"));
+        if result.is_ok()
+            && let Some((x, y)) = cursor_pos.as_mut()
+        {
+            *x = x.saturating_add(dx);
+            *y = y.saturating_add(dy);
+        }
+        result
     }
 }
 
-fn move_mouse_abs(enigo: &mut enigo::Enigo, x: i32, y: i32) -> Result<()> {
+fn move_mouse_abs(
+    enigo: &mut enigo::Enigo,
+    cursor_pos: &mut Option<(i32, i32)>,
+    x: i32,
+    y: i32,
+) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let _ = enigo;
-        macos_warp_mouse(x, y)
+        *cursor_pos = Some(macos_warp_mouse(x, y)?);
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         use enigo::{Coordinate, Mouse};
-        enigo
+        let result = enigo
             .move_mouse(x, y, Coordinate::Abs)
-            .map_err(|err| anyhow!("mouse move failed: {err}"))
+            .map_err(|err| anyhow!("mouse move failed: {err}"));
+        if result.is_ok() {
+            *cursor_pos = Some((x, y));
+        }
+        result
     }
 }
 
 #[cfg(target_os = "macos")]
-fn macos_warp_mouse(x: i32, y: i32) -> Result<()> {
+fn macos_warp_mouse(x: i32, y: i32) -> Result<(i32, i32)> {
     use core_graphics::display::CGDisplay;
     use core_graphics::geometry::CGPoint;
 
     let bounds = CGDisplay::main().bounds();
     let max_x = (bounds.size.width as i32).saturating_sub(1).max(0);
     let max_y = (bounds.size.height as i32).saturating_sub(1).max(0);
+    let clamped_x = x.clamp(0, max_x);
+    let clamped_y = y.clamp(0, max_y);
     let point = CGPoint::new(
-        bounds.origin.x + x.clamp(0, max_x) as f64,
-        bounds.origin.y + y.clamp(0, max_y) as f64,
+        bounds.origin.x + clamped_x as f64,
+        bounds.origin.y + clamped_y as f64,
     );
     CGDisplay::warp_mouse_cursor_position(point)
-        .map_err(|err| anyhow!("absolute mouse warp failed: {err:?}"))
+        .map_err(|err| anyhow!("absolute mouse warp failed: {err:?}"))?;
+    Ok((clamped_x, clamped_y))
 }
 
 fn map_button(button: Button) -> enigo::Button {
