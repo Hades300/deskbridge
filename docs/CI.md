@@ -17,4 +17,10 @@ It cannot prove the full physical product behavior by itself. The following stil
 
 The workflow lives at `.github/workflows/ci.yml`.
 
+Release packaging lives at `.github/workflows/release.yml`. It runs on `v*` tags and manual dispatch, then publishes:
+
+- macOS `.dmg` and `.zip`
+- Windows x64 and ARM64 `.zip`
+- Linux x64 `.tar.gz`
+
 If GitHub-hosted Windows ARM64 runners are available to your account, a future job can switch from cross-checking `aarch64-pc-windows-msvc` on `windows-latest` to running natively on `windows-11-arm`.

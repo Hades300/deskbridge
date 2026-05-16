@@ -46,6 +46,18 @@ Run the full local verification pass:
 
 If `x86_64-pc-windows-msvc` is installed, the verification script also runs Windows target `cargo check` and clippy for the server hook path.
 
+## Releases
+
+GitHub Actions creates release packages when a `v*` tag is pushed, or when the `Release` workflow is run manually:
+
+- `DeskBridge-macos.dmg`
+- `DeskBridge-macos.zip`
+- `DeskBridge-windows-x64.zip`
+- `DeskBridge-windows-arm64.zip`
+- `DeskBridge-linux-x64.tar.gz`
+
+The macOS app is ad-hoc signed for preview builds. The Windows packages include `deskbridge.exe` and the WPF admin app.
+
 macOS shell:
 
 ```bash
