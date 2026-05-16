@@ -149,7 +149,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private const double PreviewCanvasHeight = 220;
     private const double PreviewPadding = 18;
     private const double MinOverlap = 140;
-    private const double PortalGlowThickness = 5;
+    private const double PortalGlowThickness = 12;
     private const string PortalFlashLogPrefix = "DESKBRIDGE_PORTAL_FLASH ";
     private const int SM_CXSCREEN = 0;
     private const int SM_CYSCREEN = 1;
@@ -182,7 +182,29 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         }
     }
 
-    public bool IsServerMode => Mode == "Server";
+    public bool IsServerMode
+    {
+        get => Mode == "Server";
+        set
+        {
+            if (value)
+            {
+                Mode = "Server";
+            }
+        }
+    }
+
+    public bool IsClientMode
+    {
+        get => Mode == "Client";
+        set
+        {
+            if (value)
+            {
+                Mode = "Client";
+            }
+        }
+    }
 
     public Visibility ServerSettingsVisibility => IsServerMode ? Visibility.Visible : Visibility.Collapsed;
 
@@ -209,8 +231,6 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     public string ClipboardSummary => ClipboardEnabled
         ? $"Clipboard: {ClipboardFormats()}"
         : "Clipboard off";
-
-    public IReadOnlyList<string> PortalFeedbackColors { get; } = new[] { "lime", "aqua", "blue", "violet", "amber", "rose" };
 
     public string PortalFeedbackSummary => PortalFeedbackEnabled
         ? $"Portal glow: {PortalFeedbackColor}"
@@ -312,8 +332,45 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (SetField(ref _portalFeedbackColor, value))
             {
                 OnPropertyChanged(nameof(PortalFeedbackSummary));
+                OnPortalColorChanged();
             }
         }
+    }
+
+    public bool IsPortalColorLime
+    {
+        get => PortalFeedbackColor == "lime";
+        set { if (value) PortalFeedbackColor = "lime"; }
+    }
+
+    public bool IsPortalColorAqua
+    {
+        get => PortalFeedbackColor == "aqua";
+        set { if (value) PortalFeedbackColor = "aqua"; }
+    }
+
+    public bool IsPortalColorBlue
+    {
+        get => PortalFeedbackColor == "blue";
+        set { if (value) PortalFeedbackColor = "blue"; }
+    }
+
+    public bool IsPortalColorViolet
+    {
+        get => PortalFeedbackColor == "violet";
+        set { if (value) PortalFeedbackColor = "violet"; }
+    }
+
+    public bool IsPortalColorAmber
+    {
+        get => PortalFeedbackColor == "amber";
+        set { if (value) PortalFeedbackColor = "amber"; }
+    }
+
+    public bool IsPortalColorRose
+    {
+        get => PortalFeedbackColor == "rose";
+        set { if (value) PortalFeedbackColor = "rose"; }
     }
 
     public string ServerName
@@ -873,6 +930,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private void OnModeChanged()
     {
         OnPropertyChanged(nameof(IsServerMode));
+        OnPropertyChanged(nameof(IsClientMode));
         OnPropertyChanged(nameof(ServerSettingsVisibility));
         OnPropertyChanged(nameof(ClientSettingsVisibility));
         OnPropertyChanged(nameof(LayoutVisibility));
@@ -888,6 +946,16 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(PeerLayoutSummary));
         OnPropertyChanged(nameof(RouteSummary));
         OnPropertyChanged(nameof(LayoutSummary));
+    }
+
+    private void OnPortalColorChanged()
+    {
+        OnPropertyChanged(nameof(IsPortalColorLime));
+        OnPropertyChanged(nameof(IsPortalColorAqua));
+        OnPropertyChanged(nameof(IsPortalColorBlue));
+        OnPropertyChanged(nameof(IsPortalColorViolet));
+        OnPropertyChanged(nameof(IsPortalColorAmber));
+        OnPropertyChanged(nameof(IsPortalColorRose));
     }
 
     private void OnLayoutChanged()
@@ -1259,7 +1327,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             }
 
             var next = $"{Diagnostics}\n{line}";
-            Diagnostics = next.Length > 20_000 ? next[^20_000..] : next;
+            Diagnostics = next.Length > 8_000 ? next[^8_000..] : next;
         });
     }
 
@@ -1475,13 +1543,14 @@ internal static class PortalFlashOverlay
     {
         var frame = OverlayFrame(flash);
         var color = ColorFor(flash.Color);
-        var brush = new SolidColorBrush(Color.FromArgb(225, color.R, color.G, color.B));
+        var chrome = NeonChrome(flash.Edge, color);
         var window = new Window
         {
             Width = frame.Width,
             Height = frame.Height,
             Left = frame.Left,
             Top = frame.Top,
+            Opacity = 0,
             WindowStyle = WindowStyle.None,
             ResizeMode = ResizeMode.NoResize,
             AllowsTransparency = true,
@@ -1491,34 +1560,129 @@ internal static class PortalFlashOverlay
             IsHitTestVisible = false,
             Focusable = false,
             ShowActivated = false,
-            Content = new Border
-            {
-                Background = brush,
-                CornerRadius = new CornerRadius(4),
-                Effect = new DropShadowEffect
-                {
-                    Color = color,
-                    ShadowDepth = 0,
-                    BlurRadius = 22,
-                    Opacity = 0.95,
-                },
-            },
+            Content = chrome,
         };
 
         window.Show();
         var duration = TimeSpan.FromMilliseconds(Math.Clamp((double)flash.DurationMs, 140, 800));
-        var animation = new DoubleAnimation(1, 0, duration)
+        var fadeInMs = Math.Min(90, Math.Max(45, duration.TotalMilliseconds * 0.22));
+        var fadeOutMs = Math.Max(80, duration.TotalMilliseconds - fadeInMs);
+        var fadeIn = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(fadeInMs))
         {
-            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
         };
-        animation.Completed += (_, _) => window.Close();
-        window.BeginAnimation(UIElement.OpacityProperty, animation);
+        fadeIn.Completed += (_, _) =>
+        {
+            var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(fadeOutMs))
+            {
+                EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut },
+            };
+            fadeOut.Completed += (_, _) => window.Close();
+            window.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+        };
+        window.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+    }
+
+    private static Grid NeonChrome(string edge, Color color)
+    {
+        var vertical = edge is "left" or "right";
+        var haloColor = Color.FromArgb(150, color.R, color.G, color.B);
+        var midColor = Color.FromArgb(70, color.R, color.G, color.B);
+        var clearColor = Color.FromArgb(0, color.R, color.G, color.B);
+
+        var brush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = vertical ? new Point(1, 0) : new Point(0, 1) };
+        if (edge is "right" or "bottom")
+        {
+            brush.GradientStops.Add(new GradientStop(clearColor, 0));
+            brush.GradientStops.Add(new GradientStop(midColor, 0.58));
+            brush.GradientStops.Add(new GradientStop(haloColor, 0.92));
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(220, color.R, color.G, color.B), 1));
+        }
+        else
+        {
+            brush.GradientStops.Add(new GradientStop(Color.FromArgb(220, color.R, color.G, color.B), 0));
+            brush.GradientStops.Add(new GradientStop(haloColor, 0.08));
+            brush.GradientStops.Add(new GradientStop(midColor, 0.42));
+            brush.GradientStops.Add(new GradientStop(clearColor, 1));
+        }
+
+        var chrome = new Grid
+        {
+            RenderTransform = vertical ? new ScaleTransform(0.94, 1) : new ScaleTransform(1, 0.94),
+            RenderTransformOrigin = edge switch
+            {
+                "right" => new Point(1, 0.5),
+                "bottom" => new Point(0.5, 1),
+                "top" => new Point(0.5, 0),
+                _ => new Point(0, 0.5),
+            },
+        };
+
+        var halo = new Border
+        {
+            Background = brush,
+            CornerRadius = new CornerRadius(18),
+            Effect = new DropShadowEffect
+            {
+                Color = color,
+                ShadowDepth = 0,
+                BlurRadius = 28,
+                Opacity = 0.55,
+            },
+        };
+        chrome.Children.Add(halo);
+
+        var core = new Border
+        {
+            Width = vertical ? 3 : double.NaN,
+            Height = vertical ? double.NaN : 3,
+            HorizontalAlignment = edge switch
+            {
+                "right" => HorizontalAlignment.Right,
+                "left" => HorizontalAlignment.Left,
+                _ => HorizontalAlignment.Stretch,
+            },
+            VerticalAlignment = edge switch
+            {
+                "top" => VerticalAlignment.Top,
+                "bottom" => VerticalAlignment.Bottom,
+                _ => VerticalAlignment.Stretch,
+            },
+            Background = new SolidColorBrush(Color.FromArgb(230, color.R, color.G, color.B)),
+            CornerRadius = new CornerRadius(2),
+            Effect = new DropShadowEffect
+            {
+                Color = color,
+                ShadowDepth = 0,
+                BlurRadius = 18,
+                Opacity = 0.75,
+            },
+        };
+        chrome.Children.Add(core);
+
+        var scaleIn = new DoubleAnimation(1, TimeSpan.FromMilliseconds(120))
+        {
+            EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut },
+        };
+        if (chrome.RenderTransform is ScaleTransform scale)
+        {
+            if (vertical)
+            {
+                scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleIn);
+            }
+            else
+            {
+                scale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleIn);
+            }
+        }
+
+        return chrome;
     }
 
     private static Rect OverlayFrame(PortalFlashEvent flash)
     {
-        const double thickness = 8;
-        var span = Math.Clamp(110 + flash.SpeedPxPerSec / 14.0, 110, 300);
+        const double thickness = 44;
+        var span = Math.Clamp(150 + flash.SpeedPxPerSec / 10.0, 150, 380);
         var left = SystemParameters.VirtualScreenLeft;
         var top = SystemParameters.VirtualScreenTop;
         var width = SystemParameters.VirtualScreenWidth;

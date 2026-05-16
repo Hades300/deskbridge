@@ -5,6 +5,7 @@ struct DeskBridgeView: View {
     @ObservedObject var model: DeskBridgeModel
     @State private var dragStartOffset: CGSize?
     @State private var dragStartScale: Double = 0.08
+    @State private var diagnosticsExpanded = false
 
     var body: some View {
         ZStack {
@@ -385,29 +386,63 @@ struct DeskBridgeView: View {
         switch edge {
         case .left:
             HStack {
-                Rectangle().fill(color).frame(width: 5)
-                    .shadow(color: color.opacity(0.95), radius: 10)
+                verticalPortalGlow(color: color, leading: true)
                 Spacer()
             }
         case .right:
             HStack {
                 Spacer()
-                Rectangle().fill(color).frame(width: 5)
-                    .shadow(color: color.opacity(0.95), radius: 10)
+                verticalPortalGlow(color: color, leading: false)
             }
         case .top:
             VStack {
-                Rectangle().fill(color).frame(height: 5)
-                    .shadow(color: color.opacity(0.95), radius: 10)
+                horizontalPortalGlow(color: color, top: true)
                 Spacer()
             }
         case .bottom:
             VStack {
                 Spacer()
-                Rectangle().fill(color).frame(height: 5)
-                    .shadow(color: color.opacity(0.95), radius: 10)
+                horizontalPortalGlow(color: color, top: false)
             }
         }
+    }
+
+    private func verticalPortalGlow(color: Color, leading: Bool) -> some View {
+        ZStack(alignment: leading ? .leading : .trailing) {
+            LinearGradient(
+                colors: leading
+                    ? [color.opacity(0.95), color.opacity(0.42), color.opacity(0)]
+                    : [color.opacity(0), color.opacity(0.42), color.opacity(0.95)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .blur(radius: 1.2)
+
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(color.opacity(0.92))
+                .frame(width: 3)
+                .shadow(color: color.opacity(0.75), radius: 12)
+        }
+        .frame(width: 16)
+    }
+
+    private func horizontalPortalGlow(color: Color, top: Bool) -> some View {
+        ZStack(alignment: top ? .top : .bottom) {
+            LinearGradient(
+                colors: top
+                    ? [color.opacity(0.95), color.opacity(0.42), color.opacity(0)]
+                    : [color.opacity(0), color.opacity(0.42), color.opacity(0.95)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .blur(radius: 1.2)
+
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(color.opacity(0.92))
+                .frame(height: 3)
+                .shadow(color: color.opacity(0.75), radius: 12)
+        }
+        .frame(height: 16)
     }
 
     private var statusPanel: some View {
@@ -435,18 +470,7 @@ struct DeskBridgeView: View {
 
     private var diagnosticsPanel: some View {
         sectionSurface {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    sectionHeader(title: "Diagnostics", subtitle: "Local and peer debug output", systemImage: "doc.text.magnifyingglass")
-                    Spacer()
-                    Button {
-                        copyDiagnostics()
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                    }
-                    .buttonStyle(.bordered)
-                }
-
+            DisclosureGroup(isExpanded: $diagnosticsExpanded) {
                 ScrollView {
                     Text(model.lastDiagnostics)
                         .font(.system(size: 11, weight: .regular, design: .monospaced))
@@ -458,7 +482,20 @@ struct DeskBridgeView: View {
                 .frame(height: 170)
                 .background(DeskBridgeTheme.codeBackground, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(DeskBridgeTheme.hairline))
+                .padding(.top, 12)
+            } label: {
+                HStack {
+                    sectionHeader(title: "Diagnostics", subtitle: "Logs, probes, and counters when needed", systemImage: "doc.text.magnifyingglass")
+                    Spacer()
+                    Button {
+                        copyDiagnostics()
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
+            .disclosureGroupStyle(.automatic)
         }
     }
 

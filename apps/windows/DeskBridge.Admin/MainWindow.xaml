@@ -53,10 +53,22 @@
           </StackPanel>
         </Border>
 
-        <ComboBox Width="150" SelectedValue="{Binding Mode}" SelectedValuePath="Content">
-          <ComboBoxItem Content="Server"/>
-          <ComboBoxItem Content="Client"/>
-        </ComboBox>
+        <Border Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderBrushSoft}"
+                BorderThickness="1"
+                CornerRadius="9"
+                Padding="3">
+          <UniformGrid Columns="2" Width="178">
+            <RadioButton Content="Server"
+                         GroupName="Mode"
+                         IsChecked="{Binding IsServerMode, Mode=TwoWay}"
+                         Style="{StaticResource SegmentRadioButton}"/>
+            <RadioButton Content="Client"
+                         GroupName="Mode"
+                         IsChecked="{Binding IsClientMode, Mode=TwoWay}"
+                         Style="{StaticResource SegmentRadioButton}"/>
+          </UniformGrid>
+        </Border>
       </StackPanel>
 
       <StackPanel>
@@ -156,9 +168,16 @@
               </WrapPanel>
 
               <TextBlock Grid.Row="4" Text="Portal" Style="{StaticResource MutedLabel}" Margin="0,12,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
-              <WrapPanel Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,12,0,0" Visibility="{Binding ServerSettingsVisibility}">
+              <WrapPanel Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,12,0,0" VerticalAlignment="Center" Visibility="{Binding ServerSettingsVisibility}">
                 <CheckBox Content="Glow feedback" IsChecked="{Binding PortalFeedbackEnabled}" Margin="0,0,18,0"/>
-                <ComboBox Width="120" ItemsSource="{Binding PortalFeedbackColors}" SelectedItem="{Binding PortalFeedbackColor}" Margin="0,0,12,0"/>
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
+                  <RadioButton GroupName="PortalColor" ToolTip="Lime" Background="#B3F27A" IsChecked="{Binding IsPortalColorLime, Mode=TwoWay}" Style="{StaticResource ColorSwatchRadioButton}" Margin="0,0,8,0"/>
+                  <RadioButton GroupName="PortalColor" ToolTip="Aqua" Background="#59E0FF" IsChecked="{Binding IsPortalColorAqua, Mode=TwoWay}" Style="{StaticResource ColorSwatchRadioButton}" Margin="0,0,8,0"/>
+                  <RadioButton GroupName="PortalColor" ToolTip="Blue" Background="#618CFF" IsChecked="{Binding IsPortalColorBlue, Mode=TwoWay}" Style="{StaticResource ColorSwatchRadioButton}" Margin="0,0,8,0"/>
+                  <RadioButton GroupName="PortalColor" ToolTip="Violet" Background="#C77AFF" IsChecked="{Binding IsPortalColorViolet, Mode=TwoWay}" Style="{StaticResource ColorSwatchRadioButton}" Margin="0,0,8,0"/>
+                  <RadioButton GroupName="PortalColor" ToolTip="Amber" Background="#FFB340" IsChecked="{Binding IsPortalColorAmber, Mode=TwoWay}" Style="{StaticResource ColorSwatchRadioButton}" Margin="0,0,8,0"/>
+                  <RadioButton GroupName="PortalColor" ToolTip="Rose" Background="#FF6B8F" IsChecked="{Binding IsPortalColorRose, Mode=TwoWay}" Style="{StaticResource ColorSwatchRadioButton}"/>
+                </StackPanel>
                 <TextBlock Text="{Binding PortalFeedbackSummary}" Style="{StaticResource SubtleText}" VerticalAlignment="Center"/>
               </WrapPanel>
 
@@ -186,16 +205,32 @@
                     BorderThickness="1" CornerRadius="8" ClipToBounds="True" HorizontalAlignment="Left">
               <Canvas x:Name="LayoutCanvas">
                 <Rectangle Canvas.Left="{Binding LocalGlowLeft}" Canvas.Top="{Binding LocalGlowTop}"
-                           Width="{Binding LocalGlowWidth}" Height="{Binding LocalGlowHeight}" Fill="{StaticResource AccentBrush}">
+                           Width="{Binding LocalGlowWidth}" Height="{Binding LocalGlowHeight}" Opacity="0.96">
+                  <Rectangle.Fill>
+                    <RadialGradientBrush Center="0.5,0.5" GradientOrigin="0.5,0.5" RadiusX="0.72" RadiusY="0.72">
+                      <GradientStop Color="#00CDEA69" Offset="0"/>
+                      <GradientStop Color="#EECDEA69" Offset="0.36"/>
+                      <GradientStop Color="#66CDEA69" Offset="0.68"/>
+                      <GradientStop Color="#00CDEA69" Offset="1"/>
+                    </RadialGradientBrush>
+                  </Rectangle.Fill>
                   <Rectangle.Effect>
-                    <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="18" Opacity="0.85"/>
+                    <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="22" Opacity="0.65"/>
                   </Rectangle.Effect>
                 </Rectangle>
 
                 <Rectangle Canvas.Left="{Binding PeerGlowLeft}" Canvas.Top="{Binding PeerGlowTop}"
-                           Width="{Binding PeerGlowWidth}" Height="{Binding PeerGlowHeight}" Fill="{StaticResource AccentBrush}">
+                           Width="{Binding PeerGlowWidth}" Height="{Binding PeerGlowHeight}" Opacity="0.96">
+                  <Rectangle.Fill>
+                    <RadialGradientBrush Center="0.5,0.5" GradientOrigin="0.5,0.5" RadiusX="0.72" RadiusY="0.72">
+                      <GradientStop Color="#00CDEA69" Offset="0"/>
+                      <GradientStop Color="#EECDEA69" Offset="0.36"/>
+                      <GradientStop Color="#66CDEA69" Offset="0.68"/>
+                      <GradientStop Color="#00CDEA69" Offset="1"/>
+                    </RadialGradientBrush>
+                  </Rectangle.Fill>
                   <Rectangle.Effect>
-                    <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="18" Opacity="0.85"/>
+                    <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="22" Opacity="0.65"/>
                   </Rectangle.Effect>
                 </Rectangle>
 
@@ -228,22 +263,24 @@
         </Border>
 
         <Border Style="{StaticResource PanelBorder}">
-          <StackPanel>
-            <DockPanel Margin="0,0,0,12">
-              <StackPanel>
-                <TextBlock Text="Diagnostics" FontSize="16" FontWeight="SemiBold"/>
-                <TextBlock Text="Local state, peer logs, route probes, and performance counters" Style="{StaticResource SubtleText}" Margin="0,3,0,0"/>
+          <Expander Foreground="{StaticResource TextBrush}" Background="Transparent" IsExpanded="False">
+            <Expander.Header>
+              <StackPanel Margin="4,0,0,0">
+                <TextBlock Text="Diagnostics" FontSize="15" FontWeight="SemiBold"/>
+                <TextBlock Text="Available when you need logs, probes, and performance counters" Style="{StaticResource SubtleText}" Margin="0,3,0,0"/>
               </StackPanel>
-            </DockPanel>
+            </Expander.Header>
 
             <TextBox Text="{Binding Diagnostics, Mode=OneWay}"
                      FontFamily="Cascadia Mono, Consolas"
                      FontSize="12"
                      IsReadOnly="True"
-                     MinHeight="220"
+                     MinHeight="160"
+                     MaxHeight="240"
+                     Margin="0,12,0,0"
                      TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto"/>
-          </StackPanel>
+          </Expander>
         </Border>
       </StackPanel>
     </ScrollViewer>
