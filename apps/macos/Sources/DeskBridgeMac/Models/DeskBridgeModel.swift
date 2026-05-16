@@ -316,15 +316,12 @@ final class DeskBridgeModel: ObservableObject {
 
         terminateStaleDaemonProcesses(argumentsContain: " client")
 
-        var arguments = [
+        let arguments = [
             "client",
             "--server", normalizedServerAddress,
             "--name", screenName,
             "--reconnect",
         ]
-        if reverseScroll {
-            arguments.append("--reverse-scroll")
-        }
 
         launchDaemon(arguments: arguments, launchingStatus: "Connecting")
     }
@@ -661,7 +658,7 @@ final class DeskBridgeModel: ObservableObject {
                 "stale_after_ms": 6000,
             ],
             "input": [
-                "reverse_scroll": reverseScroll,
+                "reverse_scroll": mode == .server && reverseScroll,
             ],
         ]
 

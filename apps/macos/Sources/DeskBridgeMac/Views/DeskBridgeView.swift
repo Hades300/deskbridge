@@ -1,15 +1,23 @@
 import SwiftUI
 
+private enum LayoutDragTarget: Equatable {
+    case local
+    case peer
+}
+
 struct DeskBridgeView: View {
     @ObservedObject var model: DeskBridgeModel
     @State private var dragStartOffset: CGSize?
+    @State private var dragTarget: LayoutDragTarget?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
             modePicker
             connectionForm
-            layoutEditor
+            if model.mode == .server {
+                layoutEditor
+            }
             controlBar
             statusPanel
             diagnosticsPanel
@@ -85,8 +93,10 @@ struct DeskBridgeView: View {
                 HStack(spacing: 18) {
                     Toggle("Auto reconnect", isOn: $model.autoReconnect)
                         .toggleStyle(.checkbox)
-                    Toggle("Reverse scroll", isOn: $model.reverseScroll)
-                        .toggleStyle(.checkbox)
+                    if model.mode == .server {
+                        Toggle("Reverse remote wheel", isOn: $model.reverseScroll)
+                            .toggleStyle(.checkbox)
+                    }
                 }
                 .onChange(of: model.autoReconnect) { model.save() }
                 .onChange(of: model.reverseScroll) { model.save() }
@@ -152,6 +162,7 @@ struct DeskBridgeView: View {
                         isLocal: true
                     )
                     .position(x: localOrigin.x + localSize.width / 2, y: localOrigin.y + localSize.height / 2)
+                    .gesture(screenDragGesture(target: .local, scale: scale))
 
                     screenBox(
                         title: model.peerScreenName,
@@ -161,21 +172,7 @@ struct DeskBridgeView: View {
                         isLocal: false
                     )
                     .position(x: peerOrigin.x + peerSize.width / 2, y: peerOrigin.y + peerSize.height / 2)
-                    .gesture(
-                        DragGesture()
-                            .onChanged { value in
-                                if dragStartOffset == nil {
-                                    dragStartOffset = CGSize(width: model.peerOffsetX, height: model.peerOffsetY)
-                                }
-                                let start = dragStartOffset ?? .zero
-                                model.peerOffsetX = start.width + value.translation.width / scale
-                                model.peerOffsetY = start.height + value.translation.height / scale
-                            }
-                            .onEnded { _ in
-                                dragStartOffset = nil
-                                model.snapPeerToNearestEdge()
-                            }
-                    )
+                    .gesture(screenDragGesture(target: .peer, scale: scale))
                 }
             }
             .frame(height: 190)
@@ -273,6 +270,33 @@ struct DeskBridgeView: View {
         return min(widthScale, heightScale, 0.10)
     }
 
+    private func screenDragGesture(target: LayoutDragTarget, scale: Double) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if dragStartOffset == nil || dragTarget != target {
+                    dragStartOffset = CGSize(width: model.peerOffsetX, height: model.peerOffsetY)
+                    dragTarget = target
+                }
+
+                let start = dragStartOffset ?? .zero
+                let deltaX = value.translation.width / scale
+                let deltaY = value.translation.height / scale
+                switch target {
+                case .peer:
+                    model.peerOffsetX = start.width + deltaX
+                    model.peerOffsetY = start.height + deltaY
+                case .local:
+                    model.peerOffsetX = start.width - deltaX
+                    model.peerOffsetY = start.height - deltaY
+                }
+            }
+            .onEnded { _ in
+                dragStartOffset = nil
+                dragTarget = nil
+                model.snapPeerToNearestEdge()
+            }
+    }
+
     private var controlBar: some View {
         HStack(spacing: 10) {
             Button {
@@ -302,10 +326,12 @@ struct DeskBridgeView: View {
 
             Spacer()
 
-            Button {
-                model.writeDefaultConfig()
-            } label: {
-                Label("Save Config", systemImage: "doc.badge.gearshape")
+            if model.mode == .server {
+                Button {
+                    model.writeDefaultConfig()
+                } label: {
+                    Label("Save Config", systemImage: "doc.badge.gearshape")
+                }
             }
         }
         .buttonStyle(.bordered)

@@ -47,23 +47,27 @@
             <ColumnDefinition Width="*"/>
           </Grid.ColumnDefinitions>
 
-          <TextBlock Text="Listen" VerticalAlignment="Center"/>
-          <TextBox Grid.Column="1" Text="{Binding ListenAddress, UpdateSourceTrigger=PropertyChanged}"/>
+          <TextBlock Text="Listen" VerticalAlignment="Center" Visibility="{Binding ServerSettingsVisibility}"/>
+          <TextBox Grid.Column="1" Text="{Binding ListenAddress, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ServerSettingsVisibility}"/>
+
+          <TextBlock Text="Target" VerticalAlignment="Center" Visibility="{Binding ClientSettingsVisibility}"/>
+          <TextBox Grid.Column="1" Text="{Binding ClientServerAddress, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ClientSettingsVisibility}"/>
 
           <TextBlock Grid.Row="1" Text="{Binding LocalNameLabel}" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0"/>
+          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding AllowedClient, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0" Visibility="{Binding ClientSettingsVisibility}"/>
 
           <TextBlock Grid.Row="2" Text="Config" VerticalAlignment="Center" Margin="0,10,0,0"/>
           <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ConfigPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0"/>
 
-          <TextBlock Grid.Row="3" Text="Input" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <CheckBox Grid.Row="3" Grid.Column="1" Content="Capture keyboard and mouse when server" IsChecked="{Binding CaptureInput}" Margin="0,10,0,0"/>
+          <TextBlock Grid.Row="3" Text="Input" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <CheckBox Grid.Row="3" Grid.Column="1" Content="Capture keyboard and mouse" IsChecked="{Binding CaptureInput}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
 
-          <TextBlock Grid.Row="4" Text="Scroll" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <CheckBox Grid.Row="4" Grid.Column="1" Content="Reverse wheel for remote input" IsChecked="{Binding ReverseScroll}" Margin="0,10,0,0"/>
+          <TextBlock Grid.Row="4" Text="Wheel" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <CheckBox Grid.Row="4" Grid.Column="1" Content="Reverse remote wheel" IsChecked="{Binding ReverseScroll}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
 
-          <TextBlock Grid.Row="5" Text="Debug" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <CheckBox Grid.Row="5" Grid.Column="1" Content="Keep capture route history" IsChecked="{Binding DebugLogging}" Margin="0,10,0,0"/>
+          <TextBlock Grid.Row="5" Text="Debug" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <CheckBox Grid.Row="5" Grid.Column="1" Content="Keep capture route history" IsChecked="{Binding DebugLogging}" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
         </Grid>
       </GroupBox>
 
@@ -80,26 +84,28 @@
           </Grid.ColumnDefinitions>
 
           <TextBlock Text="{Binding PeerNameLabel}" VerticalAlignment="Center"/>
-          <TextBox Grid.Column="1" Text="{Binding AllowedClient, UpdateSourceTrigger=PropertyChanged}"/>
+          <TextBox Grid.Column="1" Text="{Binding AllowedClient, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ServerSettingsVisibility}"/>
+          <TextBox Grid.Column="1" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ClientSettingsVisibility}"/>
 
-          <TextBlock Grid.Row="1" Text="Client target" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ClientServerAddress, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0"/>
-
-          <TextBlock Grid.Row="2" Text="Route" VerticalAlignment="Center" Margin="0,10,0,0"/>
-          <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding RouteSummary}" Margin="0,10,0,0"
+          <TextBlock Grid.Row="1" Text="Layout" VerticalAlignment="Center" Margin="0,10,0,0"/>
+          <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PeerLayoutSummary}" Margin="0,10,0,0"
                      Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
+
+          <TextBlock Grid.Row="2" Text="Route" VerticalAlignment="Center" Margin="0,10,0,0" Visibility="{Binding ServerSettingsVisibility}"/>
+          <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding RouteSummary}" Margin="0,10,0,0"
+                     Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" Visibility="{Binding ServerSettingsVisibility}"/>
         </Grid>
       </GroupBox>
     </Grid>
 
-    <GroupBox Grid.Row="2" Header="Layout" Margin="0,0,0,18">
+    <GroupBox Grid.Row="2" Header="Layout" Margin="0,0,0,18" Visibility="{Binding LayoutVisibility}">
       <Grid Margin="12">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Text="Drag the peer display around the local display. The green strips show the active crossing edges."
+        <TextBlock Text="{Binding LayoutSummary}"
                    Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" Margin="0,0,0,8"/>
 
         <Canvas x:Name="LayoutCanvas" Grid.Row="1" Height="190" Background="#12000000" ClipToBounds="False">
@@ -117,9 +123,14 @@
             </Rectangle.Effect>
           </Rectangle>
 
-          <Border Canvas.Left="{Binding LocalBoxLeft}" Canvas.Top="{Binding LocalBoxTop}"
+          <Border x:Name="LocalScreen"
+                  Canvas.Left="{Binding LocalBoxLeft}" Canvas.Top="{Binding LocalBoxTop}"
                   Width="{Binding LocalBoxWidth}" Height="{Binding LocalBoxHeight}"
-                  CornerRadius="7" BorderThickness="1" BorderBrush="#668CCBFF" Background="#228CCBFF">
+                  CornerRadius="7" BorderThickness="1" BorderBrush="#668CCBFF" Background="#228CCBFF"
+                  Cursor="SizeAll"
+                  MouseLeftButtonDown="LocalScreen_MouseLeftButtonDown"
+                  MouseMove="LocalScreen_MouseMove"
+                  MouseLeftButtonUp="LocalScreen_MouseLeftButtonUp">
             <StackPanel VerticalAlignment="Center">
               <TextBlock Text="{Binding LocalDisplayName}" FontWeight="SemiBold" HorizontalAlignment="Center"/>
               <TextBlock Text="{Binding LocalNameLabel}" Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}" HorizontalAlignment="Center"/>
@@ -152,9 +163,9 @@
     <DockPanel Grid.Row="4" Margin="0,18,0,0" LastChildFill="False">
       <Button Content="{Binding StartButtonText}" Command="{Binding StartCommand}" Margin="0,0,10,0"/>
       <Button Content="{Binding StopButtonText}" Command="{Binding StopCommand}" Margin="0,0,10,0"/>
-      <Button Content="Save Config" Command="{Binding SaveConfigCommand}" Margin="0,0,10,0"/>
+      <Button Content="Save Config" Command="{Binding SaveConfigCommand}" Margin="0,0,10,0" Visibility="{Binding ServerSettingsVisibility}"/>
       <Button Content="Run Diagnostics" Command="{Binding DiagnoseCommand}" Margin="0,0,10,0"/>
-      <Button Content="Open Firewall" Command="{Binding FirewallCommand}"/>
+      <Button Content="Open Firewall" Command="{Binding FirewallCommand}" Visibility="{Binding ServerSettingsVisibility}"/>
     </DockPanel>
   </Grid>
 </Window>

@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private Point? _dragStartPoint;
     private double _dragStartOffsetX;
     private double _dragStartOffsetY;
+    private bool _draggingLocalScreen;
 
     public MainWindow()
     {
@@ -25,16 +26,47 @@ public partial class MainWindow : Window
 
     private MainWindowModel Model => (MainWindowModel)DataContext;
 
+    private void LocalScreen_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        BeginScreenDrag(sender, e, draggingLocalScreen: true);
+    }
+
+    private void LocalScreen_MouseMove(object sender, MouseEventArgs e)
+    {
+        ContinueScreenDrag(e);
+    }
+
+    private void LocalScreen_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        EndScreenDrag(e);
+    }
+
     private void PeerScreen_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        BeginScreenDrag(sender, e, draggingLocalScreen: false);
+    }
+
+    private void PeerScreen_MouseMove(object sender, MouseEventArgs e)
+    {
+        ContinueScreenDrag(e);
+    }
+
+    private void PeerScreen_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        EndScreenDrag(e);
+    }
+
+    private void BeginScreenDrag(object sender, MouseButtonEventArgs e, bool draggingLocalScreen)
     {
         _dragStartPoint = e.GetPosition(LayoutCanvas);
         _dragStartOffsetX = Model.PeerOffsetX;
         _dragStartOffsetY = Model.PeerOffsetY;
+        _draggingLocalScreen = draggingLocalScreen;
         Mouse.Capture((IInputElement)sender);
         e.Handled = true;
     }
 
-    private void PeerScreen_MouseMove(object sender, MouseEventArgs e)
+    private void ContinueScreenDrag(MouseEventArgs e)
     {
         if (_dragStartPoint is not { } start || e.LeftButton != MouseButtonState.Pressed)
         {
@@ -42,12 +74,20 @@ public partial class MainWindow : Window
         }
 
         var current = e.GetPosition(LayoutCanvas);
+        var deltaX = (current.X - start.X) / MainWindowModel.LayoutScale;
+        var deltaY = (current.Y - start.Y) / MainWindowModel.LayoutScale;
+        if (_draggingLocalScreen)
+        {
+            deltaX = -deltaX;
+            deltaY = -deltaY;
+        }
+
         Model.SetPeerOffset(
-            _dragStartOffsetX + (current.X - start.X) / MainWindowModel.LayoutScale,
-            _dragStartOffsetY + (current.Y - start.Y) / MainWindowModel.LayoutScale);
+            _dragStartOffsetX + deltaX,
+            _dragStartOffsetY + deltaY);
     }
 
-    private void PeerScreen_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    private void EndScreenDrag(MouseButtonEventArgs e)
     {
         _dragStartPoint = null;
         Model.SnapPeerToNearestEdge();
@@ -102,6 +142,12 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     public bool IsServerMode => Mode == "Server";
 
+    public Visibility ServerSettingsVisibility => IsServerMode ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ClientSettingsVisibility => IsServerMode ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility LayoutVisibility => ServerSettingsVisibility;
+
     public string StartButtonText => IsServerMode ? "Start Server" : "Start Client";
 
     public string StopButtonText => IsServerMode ? "Stop Server" : "Stop Client";
@@ -115,6 +161,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     public string LocalDisplayName => IsServerMode ? ServerName : AllowedClient;
 
     public string PeerDisplayName => IsServerMode ? AllowedClient : ServerName;
+
+    public string PeerLayoutSummary => IsServerMode ? "Saved on this server" : "Configured on the server";
 
     public bool CaptureInput
     {
@@ -142,6 +190,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (SetField(ref _serverName, value))
             {
                 OnPropertyChanged(nameof(RouteSummary));
+                OnPropertyChanged(nameof(LayoutSummary));
                 OnPropertyChanged(nameof(LocalDisplayName));
                 OnPropertyChanged(nameof(PeerDisplayName));
             }
@@ -156,6 +205,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (SetField(ref _allowedClient, value))
             {
                 OnPropertyChanged(nameof(RouteSummary));
+                OnPropertyChanged(nameof(LayoutSummary));
                 OnPropertyChanged(nameof(LocalDisplayName));
                 OnPropertyChanged(nameof(PeerDisplayName));
             }
@@ -189,6 +239,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     };
 
     public string RouteSummary => $"{ServerName} {ServerLinkEdge().ToUpperInvariant()} -> {AllowedClient}";
+
+    public string LayoutSummary => $"Server layout: {RouteSummary}";
 
     public double LocalBoxLeft => LocalCanvasLeft;
     public double LocalBoxTop => LocalCanvasTop;
@@ -263,7 +315,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         {
             daemonArgs += " --debug-capture-log";
         }
-        if (ReverseScroll)
+        if (IsServerMode && ReverseScroll)
         {
             daemonArgs += " --reverse-scroll";
         }
@@ -306,7 +358,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             StatusText = IsServerMode ? $"Running on {ListenAddress}" : $"Connected to {ClientServerAddress}";
             StatusBrush = Brushes.Green;
             Diagnostics =
-                $"Started DeskBridge {Mode.ToLowerInvariant()}.\nArgs: {daemonArgs}\nScreen: {(IsServerMode ? ServerName : AllowedClient)}\nPeer: {(IsServerMode ? AllowedClient : ServerName)}\nReverse scroll: {ReverseScroll}\nDaemon: {daemonPath}";
+                $"Started DeskBridge {Mode.ToLowerInvariant()}.\nArgs: {daemonArgs}\nScreen: {(IsServerMode ? ServerName : AllowedClient)}\nPeer: {(IsServerMode ? AllowedClient : ServerName)}\nReverse scroll: {IsServerMode && ReverseScroll}\nDaemon: {daemonPath}";
         }
         catch (Exception ex)
         {
@@ -384,7 +436,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
                 links = new object[] { new { from = ServerName, edge, to = AllowedClient } },
             },
             reliability = new { heartbeat_ms = 2000, reconnect_max_ms = 10000, stale_after_ms = 6000 },
-            input = new { reverse_scroll = ReverseScroll },
+            input = new { reverse_scroll = IsServerMode && ReverseScroll },
         };
 
         var directory = Path.GetDirectoryName(ConfigPath);
@@ -406,7 +458,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         var targetName = IsServerMode ? AllowedClient : AllowedClient;
         var sections = new List<string>
         {
-            $"Status: {StatusText}\nMode: {Mode}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nClient server: {ClientServerAddress}\nRoute: {RouteSummary}\nDebug capture log: {DebugLogging}\nReverse scroll: {ReverseScroll}\n" +
+            $"Status: {StatusText}\nMode: {Mode}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nClient server: {ClientServerAddress}\nRoute: {RouteSummary}\nDebug capture log: {DebugLogging}\nReverse scroll: {IsServerMode && ReverseScroll}\n" +
             $"Daemon: {daemon}\nDeskBridge processes:\n{DescribeDeskBridgeProcesses()}",
         };
 
@@ -476,6 +528,9 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private void OnModeChanged()
     {
         OnPropertyChanged(nameof(IsServerMode));
+        OnPropertyChanged(nameof(ServerSettingsVisibility));
+        OnPropertyChanged(nameof(ClientSettingsVisibility));
+        OnPropertyChanged(nameof(LayoutVisibility));
         OnPropertyChanged(nameof(StartButtonText));
         OnPropertyChanged(nameof(StopButtonText));
         OnPropertyChanged(nameof(LocalNameLabel));
@@ -483,7 +538,9 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(WindowTitle));
         OnPropertyChanged(nameof(LocalDisplayName));
         OnPropertyChanged(nameof(PeerDisplayName));
+        OnPropertyChanged(nameof(PeerLayoutSummary));
         OnPropertyChanged(nameof(RouteSummary));
+        OnPropertyChanged(nameof(LayoutSummary));
     }
 
     private void OnLayoutChanged()
@@ -492,6 +549,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(PeerBoxTop));
         OnPropertyChanged(nameof(LayoutArrow));
         OnPropertyChanged(nameof(RouteSummary));
+        OnPropertyChanged(nameof(LayoutSummary));
         OnPropertyChanged(nameof(LocalGlowLeft));
         OnPropertyChanged(nameof(LocalGlowTop));
         OnPropertyChanged(nameof(LocalGlowWidth));
