@@ -7,6 +7,7 @@ GitHub Actions can validate the portable parts of DeskBridge:
 - WPF admin panel restore/build on Windows.
 - macOS SwiftPM app packaging.
 - Protocol loopback between server, diagnostics, and dry-run client.
+- Local reconnect smoke test where the client starts first, observes connection failures, then connects after the server appears and receives a routed input event.
 
 It cannot prove the full physical product behavior by itself. The following still need real Windows host validation:
 

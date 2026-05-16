@@ -65,10 +65,52 @@ CLIENT_LOG="$(mktemp /tmp/deskbridge-client.XXXXXX)"
 SERVER_PID=$!
 cleanup() {
   kill "$SERVER_PID" >/dev/null 2>&1 || true
+  if [[ -n "${RECONNECT_SERVER_PID:-}" ]]; then
+    kill "$RECONNECT_SERVER_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${RECONNECT_CLIENT_PID:-}" ]]; then
+    kill "$RECONNECT_CLIENT_PID" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 sleep 1
 "$ROOT/target/debug/deskbridge" diag --server 127.0.0.1:24881 --name mac
 "$ROOT/target/debug/deskbridge" client --server 127.0.0.1:24881 --name mac --dry-run --max-events 1 --once >"$CLIENT_LOG" 2>&1
+
+echo "== Reconnect after server start test =="
+RECONNECT_SERVER_LOG="$(mktemp /tmp/deskbridge-reconnect-server.XXXXXX)"
+RECONNECT_CLIENT_LOG="$(mktemp /tmp/deskbridge-reconnect-client.XXXXXX)"
+RUST_LOG=info "$ROOT/target/debug/deskbridge" client --server 127.0.0.1:24882 --name mac --dry-run --max-events 1 >"$RECONNECT_CLIENT_LOG" 2>&1 &
+RECONNECT_CLIENT_PID=$!
+sleep 1.2
+RUST_LOG=info "$ROOT/target/debug/deskbridge" server --listen 127.0.0.1:24882 --allow mac --demo-events >"$RECONNECT_SERVER_LOG" 2>&1 &
+RECONNECT_SERVER_PID=$!
+for _ in {1..30}; do
+  if ! kill -0 "$RECONNECT_CLIENT_PID" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+if kill -0 "$RECONNECT_CLIENT_PID" >/dev/null 2>&1; then
+  cat "$RECONNECT_CLIENT_LOG"
+  echo "client did not reconnect and receive an event"
+  exit 1
+fi
+wait "$RECONNECT_CLIENT_PID"
+if ! grep -q "client session failed" "$RECONNECT_CLIENT_LOG"; then
+  cat "$RECONNECT_CLIENT_LOG"
+  echo "reconnect test did not observe an initial connection failure"
+  exit 1
+fi
+if ! grep -q "connected" "$RECONNECT_CLIENT_LOG"; then
+  cat "$RECONNECT_CLIENT_LOG"
+  echo "reconnect test did not connect after server start"
+  exit 1
+fi
+if ! grep -q "dry-run input event" "$RECONNECT_CLIENT_LOG"; then
+  cat "$RECONNECT_CLIENT_LOG"
+  echo "reconnect test did not receive routed input"
+  exit 1
+fi
 
 echo "local verification passed"

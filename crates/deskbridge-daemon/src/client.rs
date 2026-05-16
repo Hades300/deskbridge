@@ -24,7 +24,10 @@ pub async fn run(options: ClientOptions) -> Result<()> {
     loop {
         attempt += 1;
         match connect_once(&options).await {
-            Ok(ClientSessionOutcome::Ended) => info!("client session ended"),
+            Ok(ClientSessionOutcome::Ended) => {
+                info!("client session ended");
+                break;
+            }
             Ok(ClientSessionOutcome::Replaced) => {
                 info!("client session was replaced by a newer local session; stopping");
                 break;
@@ -32,7 +35,7 @@ pub async fn run(options: ClientOptions) -> Result<()> {
             Err(err) => warn!(attempt, error = %err, "client session failed"),
         }
 
-        if !options.reconnect || options.max_events.is_some() {
+        if !options.reconnect {
             break;
         }
 
