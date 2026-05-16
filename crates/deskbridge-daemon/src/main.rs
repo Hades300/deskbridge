@@ -181,6 +181,8 @@ enum DebugCliCommand {
     InputSettings {
         #[arg(long, value_parser = clap::value_parser!(bool))]
         reverse_scroll: Option<bool>,
+        #[arg(long, default_value_t = false)]
+        apply_config: bool,
     },
     /// Inject synthetic capture events into the server capture path and wait for client acks.
     CaptureProbe {
@@ -346,7 +348,7 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .map(|cfg| cfg.client.name.clone())
                 .unwrap_or(name);
-            debugctl::run(server, name, debug_cli_command(command)).await
+            debugctl::run(server, name, debug_cli_command(command, config.as_ref())).await
         }
         Command::SimulateRoute {
             config,
@@ -439,7 +441,7 @@ async fn main() -> Result<()> {
     }
 }
 
-fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
+fn debug_cli_command(command: DebugCliCommand, config: Option<&DeskBridgeConfig>) -> DebugCommand {
     match command {
         DebugCliCommand::DisplayInfo => DebugCommand::DisplayInfo,
         DebugCliCommand::PeerInfo => DebugCommand::PeerInfo,
@@ -459,9 +461,23 @@ fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
         },
         DebugCliCommand::RouteStatus => DebugCommand::RouteStatus,
         DebugCliCommand::Perf => DebugCommand::Perf,
-        DebugCliCommand::InputSettings { reverse_scroll } => {
-            DebugCommand::InputSettings { reverse_scroll }
-        }
+        DebugCliCommand::InputSettings {
+            reverse_scroll,
+            apply_config,
+        } => DebugCommand::InputSettings {
+            reverse_scroll,
+            layout: if apply_config {
+                config.map(|cfg| cfg.layout.clone())
+            } else {
+                None
+            },
+            portal_feedback: if apply_config {
+                config.map(|cfg| cfg.portal_feedback.clone())
+            } else {
+                None
+            },
+            reset_route: apply_config.then_some(true),
+        },
         DebugCliCommand::CaptureProbe {
             edge,
             steps,

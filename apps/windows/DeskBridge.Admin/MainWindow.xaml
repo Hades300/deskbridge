@@ -111,11 +111,12 @@
       <StackPanel>
         <Border Style="{StaticResource PanelBorder}" Margin="0,0,0,14">
           <StackPanel>
-            <DockPanel Margin="0,0,0,14">
+            <DockPanel LastChildFill="False" Margin="0,0,0,14">
               <TextBlock Text="Connection" FontSize="16" FontWeight="SemiBold"/>
               <TextBlock DockPanel.Dock="Right"
                          Text="{Binding PeerLayoutSummary}"
                          Style="{StaticResource SubtleText}"
+                         Margin="12,0,0,0"
                          VerticalAlignment="Center"/>
             </DockPanel>
 
@@ -205,32 +206,18 @@
                     BorderThickness="1" CornerRadius="8" ClipToBounds="True" HorizontalAlignment="Left">
               <Canvas x:Name="LayoutCanvas">
                 <Rectangle Canvas.Left="{Binding LocalGlowLeft}" Canvas.Top="{Binding LocalGlowTop}"
-                           Width="{Binding LocalGlowWidth}" Height="{Binding LocalGlowHeight}" Opacity="0.96">
-                  <Rectangle.Fill>
-                    <RadialGradientBrush Center="0.5,0.5" GradientOrigin="0.5,0.5" RadiusX="0.72" RadiusY="0.72">
-                      <GradientStop Color="#00CDEA69" Offset="0"/>
-                      <GradientStop Color="#EECDEA69" Offset="0.36"/>
-                      <GradientStop Color="#66CDEA69" Offset="0.68"/>
-                      <GradientStop Color="#00CDEA69" Offset="1"/>
-                    </RadialGradientBrush>
-                  </Rectangle.Fill>
+                           Width="{Binding LocalGlowWidth}" Height="{Binding LocalGlowHeight}"
+                           Fill="{Binding PortalPreviewBrush}" Opacity="{Binding PortalPreviewOpacity}">
                   <Rectangle.Effect>
-                    <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="22" Opacity="0.65"/>
+                    <DropShadowEffect Color="{Binding PortalPreviewColor}" ShadowDepth="0" BlurRadius="5" Opacity="{Binding PortalPreviewShadowOpacity}"/>
                   </Rectangle.Effect>
                 </Rectangle>
 
                 <Rectangle Canvas.Left="{Binding PeerGlowLeft}" Canvas.Top="{Binding PeerGlowTop}"
-                           Width="{Binding PeerGlowWidth}" Height="{Binding PeerGlowHeight}" Opacity="0.96">
-                  <Rectangle.Fill>
-                    <RadialGradientBrush Center="0.5,0.5" GradientOrigin="0.5,0.5" RadiusX="0.72" RadiusY="0.72">
-                      <GradientStop Color="#00CDEA69" Offset="0"/>
-                      <GradientStop Color="#EECDEA69" Offset="0.36"/>
-                      <GradientStop Color="#66CDEA69" Offset="0.68"/>
-                      <GradientStop Color="#00CDEA69" Offset="1"/>
-                    </RadialGradientBrush>
-                  </Rectangle.Fill>
+                           Width="{Binding PeerGlowWidth}" Height="{Binding PeerGlowHeight}"
+                           Fill="{Binding PortalPreviewBrush}" Opacity="{Binding PortalPreviewOpacity}">
                   <Rectangle.Effect>
-                    <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="22" Opacity="0.65"/>
+                    <DropShadowEffect Color="{Binding PortalPreviewColor}" ShadowDepth="0" BlurRadius="5" Opacity="{Binding PortalPreviewShadowOpacity}"/>
                   </Rectangle.Effect>
                 </Rectangle>
 

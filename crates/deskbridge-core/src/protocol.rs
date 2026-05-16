@@ -1,4 +1,4 @@
-use crate::{Edge, Size};
+use crate::{Edge, Layout, PortalFeedbackConfig, Size};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -306,6 +306,12 @@ pub enum DebugCommand {
     InputSettings {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reverse_scroll: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout: Option<Layout>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        portal_feedback: Option<PortalFeedbackConfig>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_route: Option<bool>,
     },
     CaptureProbe {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -625,6 +631,9 @@ mod tests {
             request_id: Uuid::new_v4(),
             command: DebugCommand::InputSettings {
                 reverse_scroll: Some(true),
+                layout: None,
+                portal_feedback: None,
+                reset_route: None,
             },
         });
         let encoded = serde_json::to_string(&request).unwrap();

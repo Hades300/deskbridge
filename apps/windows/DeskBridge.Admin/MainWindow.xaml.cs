@@ -13,6 +13,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
+using System.Windows.Shapes;
 
 namespace DeskBridge.Admin;
 
@@ -149,7 +150,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private const double PreviewCanvasHeight = 220;
     private const double PreviewPadding = 18;
     private const double MinOverlap = 140;
-    private const double PortalGlowThickness = 12;
+    private const double PortalGlowThickness = 2;
     private const string PortalFlashLogPrefix = "DESKBRIDGE_PORTAL_FLASH ";
     private const int SM_CXSCREEN = 0;
     private const int SM_CYSCREEN = 1;
@@ -236,6 +237,14 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         ? $"Portal glow: {PortalFeedbackColor}"
         : "Portal glow off";
 
+    public Color PortalPreviewColor => PortalColorFor(PortalFeedbackColor);
+
+    public Brush PortalPreviewBrush => new SolidColorBrush(PortalPreviewColor);
+
+    public double PortalPreviewOpacity => PortalFeedbackEnabled ? 0.22 : 0.10;
+
+    public double PortalPreviewShadowOpacity => PortalFeedbackEnabled ? 0.18 : 0.07;
+
     public string LocalDisplaySummary => $"{LocalNameLabel} - {Math.Round(LocalWidth)}x{Math.Round(LocalHeight)}";
 
     public string PeerDisplaySummary => $"{PeerNameLabel} - {Math.Round(PeerWidth)}x{Math.Round(PeerHeight)}";
@@ -320,6 +329,9 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (SetField(ref _portalFeedbackEnabled, value))
             {
                 OnPropertyChanged(nameof(PortalFeedbackSummary));
+                OnPropertyChanged(nameof(PortalPreviewOpacity));
+                OnPropertyChanged(nameof(PortalPreviewShadowOpacity));
+                ApplyRuntimeInputSettings();
             }
         }
     }
@@ -333,6 +345,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             {
                 OnPropertyChanged(nameof(PortalFeedbackSummary));
                 OnPortalColorChanged();
+                ApplyRuntimeInputSettings();
             }
         }
     }
@@ -481,7 +494,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     public ICommand StartCommand => new RelayCommand(Start);
     public ICommand StopCommand => new RelayCommand(Stop);
-    public ICommand SaveConfigCommand => new RelayCommand(SaveConfig);
+    public ICommand SaveConfigCommand => new RelayCommand(ApplyRuntimeInputSettings);
     public ICommand DiagnoseCommand => new RelayCommand(Diagnose);
     public ICommand FirewallCommand => new RelayCommand(OpenFirewall);
 
@@ -829,11 +842,14 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             new[]
             {
                 "debug",
+                "--config",
+                ConfigPath,
                 "--server",
                 localServer,
                 "--name",
                 targetName,
                 "input-settings",
+                "--apply-config",
                 "--reverse-scroll",
                 reverseScroll,
             },
@@ -925,6 +941,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         }
 
         OnLayoutChanged();
+        ApplyRuntimeInputSettings();
     }
 
     private void OnModeChanged()
@@ -956,6 +973,10 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsPortalColorViolet));
         OnPropertyChanged(nameof(IsPortalColorAmber));
         OnPropertyChanged(nameof(IsPortalColorRose));
+        OnPropertyChanged(nameof(PortalPreviewColor));
+        OnPropertyChanged(nameof(PortalPreviewBrush));
+        OnPropertyChanged(nameof(PortalPreviewOpacity));
+        OnPropertyChanged(nameof(PortalPreviewShadowOpacity));
     }
 
     private void OnLayoutChanged()
@@ -1244,6 +1265,19 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             return dx >= 0 ? "right" : "left";
         }
         return dy >= 0 ? "bottom" : "top";
+    }
+
+    private static Color PortalColorFor(string id)
+    {
+        return id switch
+        {
+            "aqua" => Color.FromRgb(0x59, 0xE0, 0xFF),
+            "blue" => Color.FromRgb(0x61, 0x8C, 0xFF),
+            "violet" => Color.FromRgb(0xC7, 0x7A, 0xFF),
+            "amber" => Color.FromRgb(0xFF, 0xB3, 0x40),
+            "rose" => Color.FromRgb(0xFF, 0x6B, 0x8F),
+            _ => Color.FromRgb(0xB3, 0xF2, 0x7A),
+        };
     }
 
     private double GlowLeft(bool local)
@@ -1543,7 +1577,7 @@ internal static class PortalFlashOverlay
     {
         var frame = OverlayFrame(flash);
         var color = ColorFor(flash.Color);
-        var chrome = NeonChrome(flash.Edge, color);
+        var chrome = PointerGlowChrome(flash.Edge, color);
         var window = new Window
         {
             Width = frame.Width,
@@ -1583,59 +1617,57 @@ internal static class PortalFlashOverlay
         window.BeginAnimation(UIElement.OpacityProperty, fadeIn);
     }
 
-    private static Grid NeonChrome(string edge, Color color)
+    private static Grid PointerGlowChrome(string edge, Color color)
     {
         var vertical = edge is "left" or "right";
-        var haloColor = Color.FromArgb(150, color.R, color.G, color.B);
-        var midColor = Color.FromArgb(70, color.R, color.G, color.B);
+        var hotColor = Color.FromArgb(235, color.R, color.G, color.B);
+        var haloColor = Color.FromArgb(130, color.R, color.G, color.B);
+        var midColor = Color.FromArgb(48, color.R, color.G, color.B);
         var clearColor = Color.FromArgb(0, color.R, color.G, color.B);
 
-        var brush = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = vertical ? new Point(1, 0) : new Point(0, 1) };
-        if (edge is "right" or "bottom")
+        var center = edge switch
         {
-            brush.GradientStops.Add(new GradientStop(clearColor, 0));
-            brush.GradientStops.Add(new GradientStop(midColor, 0.58));
-            brush.GradientStops.Add(new GradientStop(haloColor, 0.92));
-            brush.GradientStops.Add(new GradientStop(Color.FromArgb(220, color.R, color.G, color.B), 1));
-        }
-        else
+            "right" => new Point(1, 0.5),
+            "top" => new Point(0.5, 0),
+            "bottom" => new Point(0.5, 1),
+            _ => new Point(0, 0.5),
+        };
+        var brush = new RadialGradientBrush
         {
-            brush.GradientStops.Add(new GradientStop(Color.FromArgb(220, color.R, color.G, color.B), 0));
-            brush.GradientStops.Add(new GradientStop(haloColor, 0.08));
-            brush.GradientStops.Add(new GradientStop(midColor, 0.42));
-            brush.GradientStops.Add(new GradientStop(clearColor, 1));
-        }
+            Center = center,
+            GradientOrigin = center,
+            RadiusX = vertical ? 0.72 : 0.46,
+            RadiusY = vertical ? 0.46 : 0.72,
+        };
+        brush.GradientStops.Add(new GradientStop(hotColor, 0));
+        brush.GradientStops.Add(new GradientStop(haloColor, 0.18));
+        brush.GradientStops.Add(new GradientStop(midColor, 0.48));
+        brush.GradientStops.Add(new GradientStop(clearColor, 1));
 
         var chrome = new Grid
         {
-            RenderTransform = vertical ? new ScaleTransform(0.94, 1) : new ScaleTransform(1, 0.94),
-            RenderTransformOrigin = edge switch
-            {
-                "right" => new Point(1, 0.5),
-                "bottom" => new Point(0.5, 1),
-                "top" => new Point(0.5, 0),
-                _ => new Point(0, 0.5),
-            },
+            RenderTransform = new ScaleTransform(0.86, 0.86),
+            RenderTransformOrigin = center,
         };
 
         var halo = new Border
         {
             Background = brush,
-            CornerRadius = new CornerRadius(18),
+            CornerRadius = new CornerRadius(999),
             Effect = new DropShadowEffect
             {
                 Color = color,
                 ShadowDepth = 0,
-                BlurRadius = 28,
-                Opacity = 0.55,
+                BlurRadius = 30,
+                Opacity = 0.42,
             },
         };
         chrome.Children.Add(halo);
 
-        var core = new Border
+        var core = new Ellipse
         {
-            Width = vertical ? 3 : double.NaN,
-            Height = vertical ? double.NaN : 3,
+            Width = 16,
+            Height = 16,
             HorizontalAlignment = edge switch
             {
                 "right" => HorizontalAlignment.Right,
@@ -1646,34 +1678,27 @@ internal static class PortalFlashOverlay
             {
                 "top" => VerticalAlignment.Top,
                 "bottom" => VerticalAlignment.Bottom,
-                _ => VerticalAlignment.Stretch,
+                _ => VerticalAlignment.Center,
             },
-            Background = new SolidColorBrush(Color.FromArgb(230, color.R, color.G, color.B)),
-            CornerRadius = new CornerRadius(2),
+            Fill = new SolidColorBrush(Color.FromArgb(230, color.R, color.G, color.B)),
             Effect = new DropShadowEffect
             {
                 Color = color,
                 ShadowDepth = 0,
-                BlurRadius = 18,
-                Opacity = 0.75,
+                BlurRadius = 16,
+                Opacity = 0.80,
             },
         };
         chrome.Children.Add(core);
 
-        var scaleIn = new DoubleAnimation(1, TimeSpan.FromMilliseconds(120))
+        var scaleIn = new DoubleAnimation(1, TimeSpan.FromMilliseconds(130))
         {
             EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut },
         };
         if (chrome.RenderTransform is ScaleTransform scale)
         {
-            if (vertical)
-            {
-                scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleIn);
-            }
-            else
-            {
-                scale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleIn);
-            }
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleIn);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleIn);
         }
 
         return chrome;
@@ -1681,8 +1706,8 @@ internal static class PortalFlashOverlay
 
     private static Rect OverlayFrame(PortalFlashEvent flash)
     {
-        const double thickness = 44;
-        var span = Math.Clamp(150 + flash.SpeedPxPerSec / 10.0, 150, 380);
+        const double thickness = 150;
+        var span = Math.Clamp(92 + flash.SpeedPxPerSec / 18.0, 92, 190);
         var left = SystemParameters.VirtualScreenLeft;
         var top = SystemParameters.VirtualScreenTop;
         var width = SystemParameters.VirtualScreenWidth;

@@ -15,7 +15,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex as StdMutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -59,12 +59,22 @@ struct ServerShared {
 #[derive(Debug)]
 struct RuntimeSettings {
     reverse_scroll: AtomicBool,
+    layout_revision: AtomicU64,
+    layout: StdMutex<Layout>,
+    portal_feedback: StdMutex<PortalFeedbackConfig>,
 }
 
 impl RuntimeSettings {
-    fn new(reverse_scroll: bool) -> ServerRuntimeSettings {
+    fn new(
+        reverse_scroll: bool,
+        layout: Layout,
+        portal_feedback: PortalFeedbackConfig,
+    ) -> ServerRuntimeSettings {
         Arc::new(Self {
             reverse_scroll: AtomicBool::new(reverse_scroll),
+            layout_revision: AtomicU64::new(1),
+            layout: StdMutex::new(layout),
+            portal_feedback: StdMutex::new(portal_feedback),
         })
     }
 
@@ -74,6 +84,38 @@ impl RuntimeSettings {
 
     fn set_reverse_scroll(&self, value: bool) -> bool {
         self.reverse_scroll.swap(value, Ordering::Relaxed)
+    }
+
+    fn layout(&self) -> Layout {
+        self.layout.lock().unwrap().clone()
+    }
+
+    fn set_layout(&self, layout: Layout) -> Result<bool, deskbridge_core::LayoutError> {
+        layout.validate()?;
+        let mut current = self.layout.lock().unwrap();
+        let changed = *current != layout;
+        if changed {
+            *current = layout;
+            self.layout_revision.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(changed)
+    }
+
+    fn layout_revision(&self) -> u64 {
+        self.layout_revision.load(Ordering::Relaxed)
+    }
+
+    fn portal_feedback(&self) -> PortalFeedbackConfig {
+        self.portal_feedback.lock().unwrap().clone()
+    }
+
+    fn set_portal_feedback(&self, portal_feedback: PortalFeedbackConfig) -> bool {
+        let mut current = self.portal_feedback.lock().unwrap();
+        let changed = *current != portal_feedback;
+        if changed {
+            *current = portal_feedback;
+        }
+        changed
     }
 }
 
@@ -105,11 +147,19 @@ struct RouteDebugEnvelope {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct PortalFeedbackTargets<'a> {
+    server_name: &'a str,
+    client_name: &'a str,
+    client_supported: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum RouteDebugCommand {
     Probe(RouteProbeOptions),
     CaptureProbe(RouteProbeOptions),
     Status,
     Perf,
+    ApplySettings { reset_route: bool },
 }
 
 #[derive(Debug)]
@@ -462,7 +512,11 @@ pub async fn run(options: ServerOptions) -> Result<()> {
     let (capture_tx, _) = crate::capture::channel();
     let sessions = SessionRegistry::default();
     let server_log = new_server_debug_log();
-    let runtime_settings = RuntimeSettings::new(options.reverse_scroll);
+    let runtime_settings = RuntimeSettings::new(
+        options.reverse_scroll,
+        options.layout.clone(),
+        options.portal_feedback.clone(),
+    );
 
     if options.capture {
         start_platform_capture(capture_tx.clone())?;
@@ -566,6 +620,29 @@ fn apply_client_screen_size(options: &mut ServerOptions, hello: &Hello) {
             "using client-reported screen size for routing"
         );
     }
+}
+
+fn session_route_layout(
+    mut layout: Layout,
+    session_layout: &Layout,
+    server_name: &str,
+    client_name: &str,
+) -> Layout {
+    apply_session_screen_size(&mut layout, session_layout, server_name);
+    apply_session_screen_size(&mut layout, session_layout, client_name);
+    layout
+}
+
+fn apply_session_screen_size(layout: &mut Layout, session_layout: &Layout, screen_name: &str) {
+    let Some(screen) = session_layout
+        .screens
+        .iter()
+        .find(|screen| screen.name == screen_name)
+    else {
+        return;
+    };
+
+    let _ = layout.set_screen_size_preserving_links(screen_name, screen.size);
 }
 
 async fn handle_client(
@@ -793,7 +870,14 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut inbound = spawn_reader(reader);
     let mut seq = 0_u64;
     let mut demo_stage = 0_u64;
-    let mut demo_router = InputRouter::new(options.layout.clone(), options.name.clone()).ok();
+    let mut route_layout = session_route_layout(
+        runtime_settings.layout(),
+        &options.layout,
+        &options.name,
+        client_name,
+    );
+    let mut portal_feedback = runtime_settings.portal_feedback();
+    let mut demo_router = InputRouter::new(route_layout.clone(), options.name.clone()).ok();
     let mut capture_rx = capture_tx.subscribe();
     let mut pending_debug = HashMap::<Uuid, oneshot::Sender<DebugResponse>>::new();
     let mut pending_route_probes = HashMap::<Uuid, PendingRouteProbe>::new();
@@ -820,7 +904,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                 let event = transform_routed_input_event(
                     next_demo_event(
                     &mut demo_router,
-                    &options.layout,
+                    &route_layout,
                     &options.name,
                     client_name,
                     demo_stage,
@@ -904,10 +988,13 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             &mut writer,
                             &mut portal_seq,
                             portal,
-                            options,
-                            client_name,
+                            &portal_feedback,
+                            PortalFeedbackTargets {
+                                server_name: &options.name,
+                                client_name,
+                                client_supported: client_portal_feedback_supported,
+                            },
                             capture_speed_px_per_sec,
-                            client_portal_feedback_supported,
                         )
                         .await?;
                     }
@@ -971,7 +1058,15 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             ok: true,
                             message: "route status read".to_string(),
                             display: None,
-                            logs: build_route_status_logs(options, &runtime_settings, client_name, &demo_router, route_debug.request_id),
+                            logs: build_route_status_logs(
+                                options,
+                                &runtime_settings,
+                                client_name,
+                                &demo_router,
+                                route_debug.request_id,
+                                &route_layout,
+                                &portal_feedback,
+                            ),
                         });
                         continue;
                     }
@@ -988,6 +1083,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     RouteDebugCommand::Probe(probe_options) => {
                         let (events, logs) = match build_route_probe_events(
                             options,
+                            &route_layout,
                             client_name,
                             probe_options,
                             route_debug.request_id,
@@ -1026,6 +1122,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     RouteDebugCommand::CaptureProbe(probe_options) => {
                         let (events, logs) = match build_capture_probe_events(
                             options,
+                            &route_layout,
                             client_name,
                             probe_options,
                             route_debug.request_id,
@@ -1068,6 +1165,41 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                                 break;
                             }
                         }
+                    }
+                    RouteDebugCommand::ApplySettings { reset_route } => {
+                        route_layout = session_route_layout(
+                            runtime_settings.layout(),
+                            &options.layout,
+                            &options.name,
+                            client_name,
+                        );
+                        portal_feedback = runtime_settings.portal_feedback();
+                        if reset_route || demo_router.is_none() {
+                            demo_router = InputRouter::new(route_layout.clone(), options.name.clone()).ok();
+                            crate::capture::set_local_input_suppressed(false);
+                        }
+                        let active_screen = demo_router
+                            .as_ref()
+                            .map(|router| router.active_screen().to_string())
+                            .unwrap_or_else(|| "unavailable".to_string());
+                        let _ = route_debug.response_tx.send(DebugResponse {
+                            request_id: route_debug.request_id,
+                            ok: demo_router.is_some(),
+                            message: if demo_router.is_some() {
+                                "runtime route settings applied".to_string()
+                            } else {
+                                "runtime route settings saved, but router could not be rebuilt".to_string()
+                            },
+                            display: None,
+                            logs: vec![
+                                format!("session route reset={reset_route} active_screen={active_screen}"),
+                                format!("layout_revision={}", runtime_settings.layout_revision()),
+                                format!(
+                                    "portal_feedback enabled={} color={}",
+                                    portal_feedback.enabled, portal_feedback.color
+                                ),
+                            ],
+                        });
                     }
                 }
             }
@@ -1265,13 +1397,50 @@ async fn handle_diagnostic_session(
                 )
                 .await
             }
-            DebugCommand::InputSettings { reverse_scroll } => {
-                let response = update_runtime_input_settings(
+            DebugCommand::InputSettings {
+                reverse_scroll,
+                layout,
+                portal_feedback,
+                reset_route,
+            } => {
+                let mut response = update_runtime_input_settings(
                     request.request_id,
                     reverse_scroll,
+                    layout.clone(),
+                    portal_feedback.clone(),
                     &runtime_settings,
                     &server_log,
                 );
+
+                if response.ok
+                    && (layout.is_some()
+                        || portal_feedback.is_some()
+                        || reset_route.unwrap_or(false))
+                {
+                    let command = RouteDebugCommand::ApplySettings {
+                        reset_route: reset_route.unwrap_or(false) || layout.is_some(),
+                    };
+                    match request_route_debug_response(
+                        target_screen,
+                        &sessions,
+                        request.request_id,
+                        command,
+                    )
+                    .await
+                    {
+                        Some(route_response) => {
+                            response.logs.extend(route_response.logs);
+                            if !route_response.ok {
+                                response.ok = false;
+                                response.message = route_response.message;
+                            }
+                        }
+                        None => response.logs.push(format!(
+                            "runtime settings saved; target client '{target_screen}' is not connected"
+                        )),
+                    }
+                }
+
                 write_frame(stream, &Message::DebugResponse(response)).await?;
                 Ok(())
             }
@@ -1317,20 +1486,19 @@ async fn emit_portal_feedback<W>(
     writer: &mut W,
     portal_seq: &mut u64,
     transition: &PortalTransition,
-    options: &ServerOptions,
-    client_name: &str,
+    config: &PortalFeedbackConfig,
+    targets: PortalFeedbackTargets<'_>,
     speed_px_per_sec: u32,
-    client_supported: bool,
 ) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    if !options.portal_feedback.enabled {
+    if !config.enabled {
         return Ok(());
     }
 
-    let duration_ms = portal_duration_ms(&options.portal_feedback, speed_px_per_sec);
-    let color = options.portal_feedback.color.clone();
+    let duration_ms = portal_duration_ms(config, speed_px_per_sec);
+    let color = config.color.clone();
     let packets = [
         PortalFlashPacket {
             seq: next_portal_seq(portal_seq),
@@ -1357,9 +1525,9 @@ where
     ];
 
     for packet in packets {
-        if packet.screen == options.name {
+        if packet.screen == targets.server_name {
             emit_portal_flash_log(&packet);
-        } else if packet.screen == client_name && client_supported {
+        } else if packet.screen == targets.client_name && targets.client_supported {
             write_frame(writer, &Message::PortalFlash(packet)).await?;
         }
     }
@@ -1443,12 +1611,20 @@ async fn build_server_logs_response(
         options.clipboard.poll_ms,
         options.clipboard.max_transfer_bytes
     ));
+    let portal_feedback = runtime_settings.portal_feedback();
+    let layout = runtime_settings.layout();
     logs.push(format!(
         "portal_feedback enabled={} color={} min_ms={} max_ms={}",
-        options.portal_feedback.enabled,
-        options.portal_feedback.color,
-        options.portal_feedback.min_ms,
-        options.portal_feedback.max_ms
+        portal_feedback.enabled,
+        portal_feedback.color,
+        portal_feedback.min_ms,
+        portal_feedback.max_ms
+    ));
+    logs.push(format!(
+        "layout_revision={} screens={} links={}",
+        runtime_settings.layout_revision(),
+        layout.screens.len(),
+        layout.links.len()
     ));
     logs.extend(platform_screen_debug_lines());
 
@@ -1491,11 +1667,14 @@ async fn build_server_logs_response(
 fn update_runtime_input_settings(
     request_id: Uuid,
     reverse_scroll: Option<bool>,
+    layout: Option<Layout>,
+    portal_feedback: Option<PortalFeedbackConfig>,
     runtime_settings: &ServerRuntimeSettings,
     server_log: &ServerDebugLog,
 ) -> DebugResponse {
     let mut logs = Vec::new();
     let mut changed = false;
+    let mut ok = true;
 
     if let Some(value) = reverse_scroll {
         let previous = runtime_settings.set_reverse_scroll(value);
@@ -1507,6 +1686,50 @@ fn update_runtime_input_settings(
         );
     }
 
+    if let Some(layout) = layout {
+        match runtime_settings.set_layout(layout) {
+            Ok(layout_changed) => {
+                changed |= layout_changed;
+                logs.push(format!(
+                    "layout_revision={}",
+                    runtime_settings.layout_revision()
+                ));
+                push_server_log(
+                    server_log,
+                    format!(
+                        "runtime layout updated changed={} revision={}",
+                        layout_changed,
+                        runtime_settings.layout_revision()
+                    ),
+                );
+            }
+            Err(err) => {
+                ok = false;
+                logs.push(format!("layout update failed: {err}"));
+            }
+        }
+    }
+
+    if let Some(portal_feedback) = portal_feedback {
+        let portal_changed = runtime_settings.set_portal_feedback(portal_feedback.clone());
+        changed |= portal_changed;
+        logs.push(format!(
+            "portal_feedback: changed={} enabled={} color={} min_ms={} max_ms={}",
+            portal_changed,
+            portal_feedback.enabled,
+            portal_feedback.color,
+            portal_feedback.min_ms,
+            portal_feedback.max_ms
+        ));
+        push_server_log(
+            server_log,
+            format!(
+                "runtime portal feedback updated changed={} enabled={} color={}",
+                portal_changed, portal_feedback.enabled, portal_feedback.color
+            ),
+        );
+    }
+
     logs.push(format!(
         "reverse_scroll={}",
         runtime_settings.reverse_scroll()
@@ -1514,8 +1737,10 @@ fn update_runtime_input_settings(
 
     DebugResponse {
         request_id,
-        ok: true,
-        message: if changed {
+        ok,
+        message: if !ok {
+            "server input settings update failed".to_string()
+        } else if changed {
             "server input settings updated".to_string()
         } else {
             "server input settings unchanged".to_string()
@@ -1532,7 +1757,9 @@ async fn forward_route_debug_request(
     request_id: Uuid,
     command: RouteDebugCommand,
 ) -> Result<()> {
-    let Some(route_debug_tx) = route_debug_sender(target_screen, &sessions).await else {
+    let Some(response) =
+        request_route_debug_response(target_screen, &sessions, request_id, command).await
+    else {
         write_frame(
             stream,
             &Message::Status(Status {
@@ -1544,6 +1771,17 @@ async fn forward_route_debug_request(
         return Ok(());
     };
 
+    write_frame(stream, &Message::DebugResponse(response)).await?;
+    Ok(())
+}
+
+async fn request_route_debug_response(
+    target_screen: &str,
+    sessions: &SessionRegistry,
+    request_id: Uuid,
+    command: RouteDebugCommand,
+) -> Option<DebugResponse> {
+    let route_debug_tx = route_debug_sender(target_screen, sessions).await?;
     let (response_tx, response_rx) = oneshot::channel();
     if route_debug_tx
         .send(RouteDebugEnvelope {
@@ -1553,42 +1791,22 @@ async fn forward_route_debug_request(
         })
         .is_err()
     {
-        write_frame(
-            stream,
-            &Message::Status(Status {
-                kind: StatusKind::Error,
-                message: format!("target client '{target_screen}' is no longer available"),
-            }),
-        )
-        .await?;
-        return Ok(());
+        return Some(debug_error_response(
+            request_id,
+            format!("target client '{target_screen}' is no longer available"),
+        ));
     }
 
-    match time::timeout(Duration::from_secs(5), response_rx).await {
-        Ok(Ok(response)) => write_frame(stream, &Message::DebugResponse(response)).await?,
-        Ok(Err(_)) => {
-            write_frame(
-                stream,
-                &Message::DebugResponse(debug_error_response(
-                    request_id,
-                    "route debug response channel closed".to_string(),
-                )),
-            )
-            .await?;
-        }
-        Err(_) => {
-            write_frame(
-                stream,
-                &Message::DebugResponse(debug_error_response(
-                    request_id,
-                    "route debug request timed out".to_string(),
-                )),
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+    Some(
+        match time::timeout(Duration::from_secs(5), response_rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => debug_error_response(
+                request_id,
+                "route debug response channel closed".to_string(),
+            ),
+            Err(_) => debug_error_response(request_id, "route debug request timed out".to_string()),
+        },
+    )
 }
 
 async fn route_debug_sender(
@@ -1604,14 +1822,14 @@ async fn route_debug_sender(
 
 fn build_route_probe_events(
     options: &ServerOptions,
+    layout: &Layout,
     target_screen: &str,
     probe_options: RouteProbeOptions,
     request_id: Uuid,
 ) -> Result<(Vec<InputEvent>, Vec<String>)> {
     let edge = match probe_options.edge {
         Some(edge) => edge,
-        None => options
-            .layout
+        None => layout
             .links
             .iter()
             .find(|link| link.from == options.name && link.to == target_screen)
@@ -1624,18 +1842,15 @@ fn build_route_probe_events(
                 )
             })?,
     };
-    let (x, y) = sample_point_for_transition(&options.layout, &options.name, target_screen, edge)
+    let (x, y) = sample_point_for_transition(layout, &options.name, target_screen, edge)
         .ok_or_else(|| {
-        anyhow::anyhow!(
-            "layout does not include server screen '{}' for route probe",
-            options.name
-        )
-    })?;
+            anyhow::anyhow!(
+                "layout does not include server screen '{}' for route probe",
+                options.name
+            )
+        })?;
 
-    let mut router = Some(InputRouter::new(
-        options.layout.clone(),
-        options.name.clone(),
-    )?);
+    let mut router = Some(InputRouter::new(layout.clone(), options.name.clone())?);
     let mut events = Vec::new();
     let mut logs = vec![format!(
         "route probe request={request_id} server={} target={target_screen} edge={edge:?} steps={} dx={} dy={}",
@@ -1683,14 +1898,14 @@ fn build_route_probe_events(
 
 fn build_capture_probe_events(
     options: &ServerOptions,
+    layout: &Layout,
     target_screen: &str,
     probe_options: RouteProbeOptions,
     request_id: Uuid,
 ) -> Result<(Vec<CaptureEvent>, Vec<String>)> {
     let edge = match probe_options.edge {
         Some(edge) => edge,
-        None => options
-            .layout
+        None => layout
             .links
             .iter()
             .find(|link| link.from == options.name && link.to == target_screen)
@@ -1703,13 +1918,13 @@ fn build_capture_probe_events(
                 )
             })?,
     };
-    let (x, y) = sample_point_for_transition(&options.layout, &options.name, target_screen, edge)
+    let (x, y) = sample_point_for_transition(layout, &options.name, target_screen, edge)
         .ok_or_else(|| {
-        anyhow::anyhow!(
-            "layout does not include server screen '{}' for capture probe",
-            options.name
-        )
-    })?;
+            anyhow::anyhow!(
+                "layout does not include server screen '{}' for capture probe",
+                options.name
+            )
+        })?;
 
     let mut events = Vec::with_capacity(probe_options.steps as usize + 1);
     let mut logs = vec![
@@ -1804,6 +2019,8 @@ fn build_route_status_logs(
     target_screen: &str,
     router: &Option<InputRouter>,
     request_id: Uuid,
+    layout: &Layout,
+    portal_feedback: &PortalFeedbackConfig,
 ) -> Vec<String> {
     let mut logs = vec![
         format!(
@@ -1817,9 +2034,10 @@ fn build_route_status_logs(
             options.demo_events,
             runtime_settings.reverse_scroll(),
             options.heartbeat_ms,
-            options.portal_feedback.enabled,
-            options.portal_feedback.color
+            portal_feedback.enabled,
+            portal_feedback.color
         ),
+        format!("layout_revision={}", runtime_settings.layout_revision()),
         format!(
             "active_route_screen={}",
             router
@@ -1830,7 +2048,7 @@ fn build_route_status_logs(
     ];
     logs.extend(platform_screen_debug_lines());
 
-    for screen in &options.layout.screens {
+    for screen in &layout.screens {
         logs.push(format!(
             "screen: {} {}x{} origin={}",
             screen.name,
@@ -1844,23 +2062,18 @@ fn build_route_status_logs(
     }
 
     let mut target_link_count = 0_u32;
-    for link in options
-        .layout
-        .links
-        .iter()
-        .filter(|link| link.from == options.name)
-    {
+    for link in layout.links.iter().filter(|link| link.from == options.name) {
         if link.to == target_screen {
             target_link_count += 1;
         }
 
-        match sample_point_for_transition(&options.layout, &link.from, &link.to, link.edge)
-            .and_then(|(x, y)| {
-                options
-                    .layout
+        match sample_point_for_transition(layout, &link.from, &link.to, link.edge).and_then(
+            |(x, y)| {
+                layout
                     .transition(&link.from, link.edge, x, y)
                     .map(|transition| (x, y, transition))
-            }) {
+            },
+        ) {
             Some((x, y, transition)) => logs.push(format!(
                 "link: {} {:?} -> {} source=({}, {}) target=({}, {}) return_edge={:?}",
                 link.from,
@@ -2303,7 +2516,11 @@ mod tests {
     }
 
     fn test_runtime_settings(options: &ServerOptions) -> ServerRuntimeSettings {
-        RuntimeSettings::new(options.reverse_scroll)
+        RuntimeSettings::new(
+            options.reverse_scroll,
+            options.layout.clone(),
+            options.portal_feedback.clone(),
+        )
     }
 
     fn test_shared(
@@ -2964,6 +3181,9 @@ mod tests {
                 request_id,
                 command: DebugCommand::InputSettings {
                     reverse_scroll: Some(true),
+                    layout: None,
+                    portal_feedback: None,
+                    reset_route: None,
                 },
             }),
         )

@@ -58,8 +58,8 @@ final class PortalFlashOverlayController {
 
     private func overlayFrame(for event: PortalFlashEvent, screen: NSScreen) -> NSRect {
         let screenFrame = screen.frame
-        let thickness: CGFloat = 48
-        let span = min(380, max(150, 150 + CGFloat(event.speedPxPerSec) / 10))
+        let thickness: CGFloat = 150
+        let span = min(190, max(92, 92 + CGFloat(event.speedPxPerSec) / 18))
         let x = CGFloat(event.x)
         let y = CGFloat(event.y)
 
@@ -137,7 +137,8 @@ private final class PortalFlashView: NSView {
         layer.shadowOffset = .zero
         layer.masksToBounds = false
 
-        haloLayer.cornerRadius = 18
+        haloLayer.type = .radial
+        haloLayer.cornerRadius = 999
         haloLayer.masksToBounds = true
         layer.addSublayer(haloLayer)
 
@@ -166,45 +167,40 @@ private final class PortalFlashView: NSView {
 
     private func configureGradient() {
         let strong = color.withAlphaComponent(0.86).cgColor
-        let halo = color.withAlphaComponent(0.58).cgColor
-        let mid = color.withAlphaComponent(0.26).cgColor
+        let halo = color.withAlphaComponent(0.50).cgColor
+        let mid = color.withAlphaComponent(0.18).cgColor
         let clear = color.withAlphaComponent(0).cgColor
 
         switch edge {
         case "right":
-            haloLayer.startPoint = CGPoint(x: 0, y: 0.5)
-            haloLayer.endPoint = CGPoint(x: 1, y: 0.5)
-            haloLayer.colors = [clear, mid, halo, strong]
-            haloLayer.locations = [0, 0.56, 0.90, 1]
+            haloLayer.startPoint = CGPoint(x: 1, y: 0.5)
+            haloLayer.endPoint = CGPoint(x: 0.18, y: 0.5)
         case "top":
-            haloLayer.startPoint = CGPoint(x: 0.5, y: 0)
-            haloLayer.endPoint = CGPoint(x: 0.5, y: 1)
-            haloLayer.colors = [clear, mid, halo, strong]
-            haloLayer.locations = [0, 0.56, 0.90, 1]
+            haloLayer.startPoint = CGPoint(x: 0.5, y: 1)
+            haloLayer.endPoint = CGPoint(x: 0.5, y: 0.18)
         case "bottom":
             haloLayer.startPoint = CGPoint(x: 0.5, y: 0)
-            haloLayer.endPoint = CGPoint(x: 0.5, y: 1)
-            haloLayer.colors = [strong, halo, mid, clear]
-            haloLayer.locations = [0, 0.10, 0.44, 1]
+            haloLayer.endPoint = CGPoint(x: 0.5, y: 0.82)
         default:
             haloLayer.startPoint = CGPoint(x: 0, y: 0.5)
-            haloLayer.endPoint = CGPoint(x: 1, y: 0.5)
-            haloLayer.colors = [strong, halo, mid, clear]
-            haloLayer.locations = [0, 0.10, 0.44, 1]
+            haloLayer.endPoint = CGPoint(x: 0.82, y: 0.5)
         }
+        haloLayer.colors = [strong, halo, mid, clear]
+        haloLayer.locations = [0, 0.18, 0.48, 1]
     }
 
     private func configureCore() {
-        let coreThickness: CGFloat = 3
+        let coreSize: CGFloat = 16
         switch edge {
         case "right":
-            coreLayer.frame = CGRect(x: bounds.maxX - coreThickness, y: 0, width: coreThickness, height: bounds.height)
+            coreLayer.frame = CGRect(x: bounds.maxX - coreSize, y: bounds.midY - coreSize / 2, width: coreSize, height: coreSize)
         case "top":
-            coreLayer.frame = CGRect(x: 0, y: bounds.maxY - coreThickness, width: bounds.width, height: coreThickness)
+            coreLayer.frame = CGRect(x: bounds.midX - coreSize / 2, y: bounds.maxY - coreSize, width: coreSize, height: coreSize)
         case "bottom":
-            coreLayer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: coreThickness)
+            coreLayer.frame = CGRect(x: bounds.midX - coreSize / 2, y: 0, width: coreSize, height: coreSize)
         default:
-            coreLayer.frame = CGRect(x: 0, y: 0, width: coreThickness, height: bounds.height)
+            coreLayer.frame = CGRect(x: 0, y: bounds.midY - coreSize / 2, width: coreSize, height: coreSize)
         }
+        coreLayer.cornerRadius = coreSize / 2
     }
 }

@@ -239,7 +239,7 @@ struct DeskBridgeView: View {
                 portalColorButton(choice)
             }
         }
-        .onChange(of: model.portalFeedbackEnabled) { _, _ in model.save() }
+        .onChange(of: model.portalFeedbackEnabled) { _, _ in model.applyRuntimeInputSettings() }
     }
 
     private func portalColorButton(_ choice: PortalFeedbackColorChoice) -> some View {
@@ -247,7 +247,7 @@ struct DeskBridgeView: View {
 
         return Button {
             model.portalFeedbackColor = choice.id
-            model.save()
+            model.applyRuntimeInputSettings()
         } label: {
             Circle()
                 .fill(portalColor(choice.id))
@@ -411,38 +411,38 @@ struct DeskBridgeView: View {
         ZStack(alignment: leading ? .leading : .trailing) {
             LinearGradient(
                 colors: leading
-                    ? [color.opacity(0.95), color.opacity(0.42), color.opacity(0)]
-                    : [color.opacity(0), color.opacity(0.42), color.opacity(0.95)],
+                    ? [color.opacity(0.42), color.opacity(0.16), color.opacity(0)]
+                    : [color.opacity(0), color.opacity(0.16), color.opacity(0.42)],
                 startPoint: .leading,
                 endPoint: .trailing
             )
             .blur(radius: 1.2)
 
             RoundedRectangle(cornerRadius: 1.5)
-                .fill(color.opacity(0.92))
-                .frame(width: 3)
-                .shadow(color: color.opacity(0.75), radius: 12)
+                .fill(color.opacity(0.45))
+                .frame(width: 2)
+                .shadow(color: color.opacity(0.35), radius: 5)
         }
-        .frame(width: 16)
+        .frame(width: 8)
     }
 
     private func horizontalPortalGlow(color: Color, top: Bool) -> some View {
         ZStack(alignment: top ? .top : .bottom) {
             LinearGradient(
                 colors: top
-                    ? [color.opacity(0.95), color.opacity(0.42), color.opacity(0)]
-                    : [color.opacity(0), color.opacity(0.42), color.opacity(0.95)],
+                    ? [color.opacity(0.42), color.opacity(0.16), color.opacity(0)]
+                    : [color.opacity(0), color.opacity(0.16), color.opacity(0.42)],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .blur(radius: 1.2)
 
             RoundedRectangle(cornerRadius: 1.5)
-                .fill(color.opacity(0.92))
-                .frame(height: 3)
-                .shadow(color: color.opacity(0.75), radius: 12)
+                .fill(color.opacity(0.45))
+                .frame(height: 2)
+                .shadow(color: color.opacity(0.35), radius: 5)
         }
-        .frame(height: 16)
+        .frame(height: 8)
     }
 
     private var statusPanel: some View {

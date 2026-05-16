@@ -277,7 +277,7 @@ final class DeskBridgeModel: ObservableObject {
             peerOffsetY = dy >= 0 ? localDisplayHeight : -peerDisplayHeight
             peerOffsetX = peerOffsetX.clamped(to: (-peerDisplayWidth + minOverlap)...(localDisplayWidth - minOverlap))
         }
-        save()
+        applyRuntimeInputSettings()
     }
 
     func runDiagnostics() {
@@ -344,6 +344,7 @@ final class DeskBridgeModel: ObservableObject {
         }
 
         let binary = binaryPath
+        let config = configPath.path
         let server = localDebugServerAddress
         let name = peerScreenName
         let reverseValue = reverseScroll ? "true" : "false"
@@ -354,9 +355,11 @@ final class DeskBridgeModel: ObservableObject {
                     binary: binary,
                     arguments: [
                         "debug",
+                        "--config", config,
                         "--server", server,
                         "--name", name,
                         "input-settings",
+                        "--apply-config",
                         "--reverse-scroll", reverseValue,
                     ]
                 )
