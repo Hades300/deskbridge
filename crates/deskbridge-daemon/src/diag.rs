@@ -15,7 +15,7 @@ pub async fn run(server: SocketAddr, name: String) -> Result<()> {
     println!("tcp: ok");
 
     let mut stream = stream;
-    write_frame(&mut stream, &Message::Hello(Hello::client(name))).await?;
+    write_frame(&mut stream, &Message::Hello(Hello::diagnostic(name))).await?;
     match timeout(Duration::from_secs(3), read_frame(&mut stream)).await {
         Ok(Ok(Message::Welcome(welcome))) => {
             println!("protocol: ok");

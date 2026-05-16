@@ -164,6 +164,22 @@ mod tests {
     }
 
     #[test]
+    fn routes_relative_mouse_after_crossing_linked_edge() {
+        let mut router = InputRouter::new(layout(), "windows").unwrap();
+        assert_eq!(
+            router.observe_local_pointer(1919, 540).unwrap().event,
+            InputEvent::MouseAbs { x: 1, y: 559 }
+        );
+
+        let routed = router
+            .route_if_remote_active(InputEvent::MouseMove { dx: 50, dy: -3 })
+            .unwrap();
+
+        assert_eq!(routed.target_screen, "mac");
+        assert_eq!(routed.event, InputEvent::MouseMove { dx: 50, dy: -3 });
+    }
+
+    #[test]
     fn release_returns_input_to_local_screen() {
         let mut router = InputRouter::new(layout(), "windows").unwrap();
         router.observe_local_pointer(1919, 540).unwrap();

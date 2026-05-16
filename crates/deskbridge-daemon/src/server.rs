@@ -122,6 +122,25 @@ async fn handle_client(
 
     validate_client(&hello, &allow, &mut stream).await?;
 
+    let welcome = Message::Welcome(Welcome {
+        session_id: Uuid::new_v4(),
+        server_name: options.name.clone(),
+        heartbeat_interval_ms: options.heartbeat_ms.max(DEFAULT_HEARTBEAT_MS),
+        layout_revision: 1,
+    });
+
+    if !hello.is_input_client() {
+        info!(
+            peer = %peer,
+            screen = hello.screen_name,
+            role = ?hello.role,
+            capabilities = ?hello.capabilities,
+            "diagnostic client accepted"
+        );
+        write_frame(&mut stream, &welcome).await?;
+        return Ok(());
+    }
+
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
     let session_key = hello.screen_name.to_ascii_lowercase();
     if let Some(previous) = sessions.lock().await.insert(session_key, shutdown_tx) {
@@ -135,16 +154,7 @@ async fn handle_client(
 
     info!(peer = %peer, screen = hello.screen_name, "client accepted");
 
-    write_frame(
-        &mut stream,
-        &Message::Welcome(Welcome {
-            session_id: Uuid::new_v4(),
-            server_name: options.name.clone(),
-            heartbeat_interval_ms: options.heartbeat_ms.max(DEFAULT_HEARTBEAT_MS),
-            layout_revision: 1,
-        }),
-    )
-    .await?;
+    write_frame(&mut stream, &welcome).await?;
 
     let mut ticker = time::interval(Duration::from_secs(5));
     let mut seq = 0_u64;
@@ -315,4 +325,113 @@ fn sample_point_on_edge(layout: &Layout, screen_name: &str, edge: Edge) -> Optio
         Edge::Top => (mid_x, 0),
         Edge::Bottom => (mid_x, max_y),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deskbridge_core::{Link, Ping, Screen, Size};
+
+    fn test_layout() -> Layout {
+        Layout {
+            screens: vec![
+                Screen {
+                    name: "windows".to_string(),
+                    size: Size {
+                        width: 1920,
+                        height: 1080,
+                    },
+                },
+                Screen {
+                    name: "mac".to_string(),
+                    size: Size {
+                        width: 1728,
+                        height: 1117,
+                    },
+                },
+            ],
+            links: vec![Link {
+                from: "windows".to_string(),
+                edge: Edge::Right,
+                to: "mac".to_string(),
+            }],
+        }
+    }
+
+    fn test_options(listen: SocketAddr) -> ServerOptions {
+        ServerOptions {
+            listen,
+            name: "windows".to_string(),
+            allow: vec!["mac".to_string()],
+            demo_events: false,
+            capture: false,
+            heartbeat_ms: DEFAULT_HEARTBEAT_MS,
+            layout: test_layout(),
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostic_handshake_does_not_replace_input_client() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let options = test_options(listen);
+        let allow = HashSet::from(["mac".to_string()]);
+        let (capture_tx, _) = crate::capture::channel();
+        let sessions = SessionRegistry::default();
+
+        tokio::spawn({
+            let options = options.clone();
+            let allow = allow.clone();
+            let capture_tx = capture_tx.clone();
+            let sessions = sessions.clone();
+            async move {
+                for _ in 0..2 {
+                    let (stream, peer) = listener.accept().await.unwrap();
+                    tokio::spawn(handle_client(
+                        stream,
+                        peer,
+                        options.clone(),
+                        allow.clone(),
+                        capture_tx.clone(),
+                        sessions.clone(),
+                    ));
+                }
+            }
+        });
+
+        let mut client = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut client, &Message::Hello(Hello::client("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut client).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let mut diag = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut diag, &Message::Hello(Hello::diagnostic("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut diag).await.unwrap(),
+            Message::Welcome(_)
+        ));
+        drop(diag);
+
+        write_frame(
+            &mut client,
+            &Message::Ping(Ping {
+                seq: 7,
+                sent_at_ms: deskbridge_core::now_ms(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = tokio::time::timeout(Duration::from_secs(1), read_frame(&mut client))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, Message::Pong(pong) if pong.seq == 7));
+    }
 }

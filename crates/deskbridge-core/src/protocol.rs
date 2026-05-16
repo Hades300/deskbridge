@@ -57,6 +57,17 @@ impl Hello {
         }
     }
 
+    pub fn diagnostic(screen_name: impl Into<String>) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            device_id: Uuid::new_v4(),
+            screen_name: screen_name.into(),
+            role: Role::Client,
+            crypto: CryptoMode::None,
+            capabilities: vec![Capability::Diagnostics],
+        }
+    }
+
     pub fn server(screen_name: impl Into<String>) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -71,6 +82,10 @@ impl Hello {
                 Capability::LayoutV1,
             ],
         }
+    }
+
+    pub fn is_input_client(&self) -> bool {
+        self.role == Role::Client && self.capabilities.contains(&Capability::InputInject)
     }
 }
 
@@ -178,5 +193,11 @@ mod tests {
         let encoded = serde_json::to_string(&msg).unwrap();
         let decoded: Message = serde_json::from_str(&encoded).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn diagnostic_hello_is_not_an_input_session() {
+        assert!(Hello::client("mac").is_input_client());
+        assert!(!Hello::diagnostic("mac").is_input_client());
     }
 }

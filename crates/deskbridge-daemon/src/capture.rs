@@ -19,25 +19,35 @@ pub mod windows {
     use super::{CaptureEvent, CaptureSender, InputEvent};
     use anyhow::{Result, anyhow};
     use deskbridge_core::{Button, KeyState};
+    use std::mem::size_of;
     use std::sync::{Mutex, OnceLock};
-    use std::{ptr::null_mut, thread};
-    use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use std::{
+        ptr::{null, null_mut},
+        thread,
+    };
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT,
         VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
     };
+    use windows_sys::Win32::UI::Input::{
+        GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
+        RID_INPUT, RIDEV_INPUTSINK, RIM_TYPEMOUSE, RegisterRawInputDevices,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG,
-        MSLLHOOKSTRUCT, SM_CXSCREEN, SM_CYSCREEN, SetWindowsHookExW, TranslateMessage,
-        UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
-        WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+        GetMessageW, HC_ACTION, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
+        RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SetWindowsHookExW, TranslateMessage,
+        UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
     };
 
     static CAPTURE_TX: OnceLock<Mutex<CaptureSender>> = OnceLock::new();
-    static LAST_MOUSE_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
 
     pub struct WindowsHookCapture {
+        raw_input_hwnd: HWND,
         mouse_hook: HHOOK,
         keyboard_hook: HHOOK,
     }
@@ -48,9 +58,15 @@ pub mod windows {
                 .set(Mutex::new(sender))
                 .map_err(|_| anyhow!("windows capture hook already installed"))?;
 
+            let raw_input_hwnd = create_raw_input_window()?;
+            register_raw_mouse(raw_input_hwnd)?;
+
             let mouse_hook =
                 unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), null_mut(), 0) };
             if mouse_hook.is_null() {
+                unsafe {
+                    DestroyWindow(raw_input_hwnd);
+                }
                 return Err(anyhow!("failed to install low-level mouse hook"));
             }
 
@@ -59,11 +75,13 @@ pub mod windows {
             if keyboard_hook.is_null() {
                 unsafe {
                     UnhookWindowsHookEx(mouse_hook);
+                    DestroyWindow(raw_input_hwnd);
                 }
                 return Err(anyhow!("failed to install low-level keyboard hook"));
             }
 
             Ok(Self {
+                raw_input_hwnd,
                 mouse_hook,
                 keyboard_hook,
             })
@@ -93,6 +111,7 @@ pub mod windows {
             unsafe {
                 UnhookWindowsHookEx(self.mouse_hook);
                 UnhookWindowsHookEx(self.keyboard_hook);
+                DestroyWindow(self.raw_input_hwnd);
             }
         }
     }
@@ -118,6 +137,124 @@ pub mod windows {
         let height =
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CYSCREEN) };
         (width > 0 && height > 0).then_some((width as u32, height as u32))
+    }
+
+    fn create_raw_input_window() -> Result<HWND> {
+        let instance = unsafe { GetModuleHandleW(null()) };
+        if instance.is_null() {
+            return Err(anyhow!("failed to get module handle for raw input window"));
+        }
+
+        let class_name = wide_null("DeskBridgeRawInputWindow");
+        let wnd_class = WNDCLASSW {
+            lpfnWndProc: Some(raw_input_window_proc),
+            hInstance: instance as _,
+            lpszClassName: class_name.as_ptr(),
+            ..Default::default()
+        };
+
+        unsafe {
+            RegisterClassW(&wnd_class);
+        }
+
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                class_name.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                null_mut(),
+                instance as _,
+                null(),
+            )
+        };
+        if hwnd.is_null() {
+            return Err(anyhow!("failed to create raw input message window"));
+        }
+
+        Ok(hwnd)
+    }
+
+    fn register_raw_mouse(hwnd: HWND) -> Result<()> {
+        let device = RAWINPUTDEVICE {
+            usUsagePage: 0x01,
+            usUsage: 0x02,
+            dwFlags: RIDEV_INPUTSINK,
+            hwndTarget: hwnd,
+        };
+        let ok = unsafe { RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>() as u32) };
+        if ok == 0 {
+            return Err(anyhow!("failed to register raw mouse input"));
+        }
+        Ok(())
+    }
+
+    fn wide_null(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe extern "system" fn raw_input_window_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if msg == WM_INPUT
+            && let Some(event) = unsafe { raw_mouse_event_from_lparam(lparam) }
+        {
+            send(event);
+        }
+
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    unsafe fn raw_mouse_event_from_lparam(lparam: LPARAM) -> Option<CaptureEvent> {
+        let mut size = 0_u32;
+        let header_size = size_of::<RAWINPUTHEADER>() as u32;
+        let input = lparam as HRAWINPUT;
+
+        let result =
+            unsafe { GetRawInputData(input, RID_INPUT, null_mut(), &mut size, header_size) };
+        if result == u32::MAX || size == 0 {
+            return None;
+        }
+
+        let mut buffer = vec![0_u8; size as usize];
+        let read = unsafe {
+            GetRawInputData(
+                input,
+                RID_INPUT,
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+                header_size,
+            )
+        };
+        if read == u32::MAX || read != size {
+            return None;
+        }
+
+        let raw = unsafe { &*(buffer.as_ptr() as *const RAWINPUT) };
+        if raw.header.dwType != RIM_TYPEMOUSE {
+            return None;
+        }
+
+        let mouse = unsafe { raw.data.mouse };
+        if mouse.usFlags & MOUSE_MOVE_ABSOLUTE != 0 {
+            return None;
+        }
+
+        let dx = mouse.lLastX;
+        let dy = mouse.lLastY;
+        if dx == 0 && dy == 0 {
+            return None;
+        }
+
+        Some(CaptureEvent::Input(InputEvent::MouseMove { dx, dy }))
     }
 
     unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -148,24 +285,10 @@ pub mod windows {
             WM_MOUSEMOVE => {
                 let x = hook.pt.x;
                 let y = hook.pt.y;
-                let mut events = vec![CaptureEvent::LocalPointer {
+                vec![CaptureEvent::LocalPointer {
                     x: x.max(0) as u32,
                     y: y.max(0) as u32,
-                }];
-
-                let last = LAST_MOUSE_POS.get_or_init(|| Mutex::new(None));
-                if let Ok(mut last) = last.lock() {
-                    if let Some((last_x, last_y)) = *last {
-                        let dx = x.saturating_sub(last_x);
-                        let dy = y.saturating_sub(last_y);
-                        if dx != 0 || dy != 0 {
-                            events.push(CaptureEvent::Input(InputEvent::MouseMove { dx, dy }));
-                        }
-                    }
-                    *last = Some((x, y));
-                }
-
-                events
+                }]
             }
             WM_LBUTTONDOWN => vec![mouse_button(Button::Left, KeyState::Pressed)],
             WM_LBUTTONUP => vec![mouse_button(Button::Left, KeyState::Released)],
