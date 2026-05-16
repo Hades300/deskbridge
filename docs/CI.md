@@ -8,6 +8,7 @@ GitHub Actions can validate the portable parts of DeskBridge:
 - macOS SwiftPM app packaging.
 - Protocol loopback between server, diagnostics, and dry-run client.
 - Local reconnect smoke test where the client starts first, observes connection failures, then connects after the server appears and receives a routed input event.
+- Debug route-probe smoke test where a diagnostic request asks the live server to synthesize an edge crossing, deliver `MouseAbs` and continued `MouseMove` packets to the connected client, and wait for acknowledgements.
 - Local debug-control smoke test for remote display info, mouse test command, and target-side debug logs.
 
 It cannot prove the full physical product behavior by itself. The following still need real Windows host validation:

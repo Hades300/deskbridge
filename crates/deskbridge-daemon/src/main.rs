@@ -145,6 +145,17 @@ enum DebugCliCommand {
         #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
         dy: i32,
     },
+    /// Ask the server to synthesize an edge crossing to the target client and wait for input acks.
+    RouteProbe {
+        #[arg(long, value_parser = parse_edge)]
+        edge: Option<Edge>,
+        #[arg(long, default_value_t = 3)]
+        steps: u32,
+        #[arg(long, default_value_t = 80, allow_hyphen_values = true)]
+        dx: i32,
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        dy: i32,
+    },
 }
 
 #[tokio::main]
@@ -356,6 +367,17 @@ fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
         DebugCliCommand::DisplayInfo => DebugCommand::DisplayInfo,
         DebugCliCommand::Logs => DebugCommand::RecentLogs,
         DebugCliCommand::MoveMouse { x, y, dx, dy } => DebugCommand::MoveMouse { x, y, dx, dy },
+        DebugCliCommand::RouteProbe {
+            edge,
+            steps,
+            dx,
+            dy,
+        } => DebugCommand::RouteProbe {
+            edge,
+            steps,
+            dx,
+            dy,
+        },
     }
 }
 

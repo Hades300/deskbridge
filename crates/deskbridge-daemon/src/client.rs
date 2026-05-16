@@ -203,6 +203,10 @@ async fn handle_debug_request(
             .await
             .unwrap_or_else(|err| debug_response_error(request.request_id, format!("{err:#}")))
             .with_request_id(request.request_id),
+        DebugCommand::RouteProbe { .. } => debug_response_error(
+            request.request_id,
+            "route-probe is handled by the server, not the target client".to_string(),
+        ),
     };
     debug_state.push(format!("debug response ok={}", response.ok));
     response
