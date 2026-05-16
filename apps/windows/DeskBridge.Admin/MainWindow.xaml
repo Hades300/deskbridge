@@ -98,7 +98,7 @@
     </GroupBox>
 
     <GroupBox Grid.Row="3" Header="Diagnostics">
-      <TextBox Text="{Binding Diagnostics}" Margin="12"
+      <TextBox Text="{Binding Diagnostics, Mode=OneWay}" Margin="12"
                FontFamily="Consolas" IsReadOnly="True"
                TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
     </GroupBox>
