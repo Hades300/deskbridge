@@ -103,12 +103,28 @@ final class DeskBridgeModel: ObservableObject {
     func runDiagnostics() {
         save()
         let binary = binaryPath
-        let args = ["diag", "--server", normalizedServerAddress, "--name", screenName]
+        let server = normalizedServerAddress
+        let name = screenName
         status = connected ? "Connected" : "Diagnosing"
 
         Task {
             let output = await Task.detached {
-                runDeskBridgeProcess(binary: binary, arguments: args)
+                let sections: [(String, [String])] = [
+                    ("Local version", ["version"]),
+                    ("Reachability", ["diag", "--server", server, "--name", name]),
+                    ("Server debug log", ["debug", "--server", server, "--name", name, "server-logs"]),
+                    ("Route status", ["debug", "--server", server, "--name", name, "route-status"]),
+                    ("Client peer info", ["debug", "--server", server, "--name", name, "peer-info"]),
+                    ("Client recent log", ["debug", "--server", server, "--name", name, "logs"]),
+                ]
+
+                return sections.map { title, arguments in
+                    """
+                    \(title)
+                    \(String(repeating: "-", count: title.count))
+                    \(runDeskBridgeProcess(binary: binary, arguments: arguments))
+                    """
+                }.joined(separator: "\n\n")
             }.value
             lastDiagnostics = output
             if !connected {

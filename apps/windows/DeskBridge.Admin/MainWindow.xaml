@@ -35,6 +35,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="96"/>
@@ -48,6 +49,8 @@
           <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ConfigPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,10,0,0"/>
           <TextBlock Grid.Row="3" Text="Input" VerticalAlignment="Center" Margin="0,10,0,0"/>
           <CheckBox Grid.Row="3" Grid.Column="1" Content="Capture keyboard and mouse" IsChecked="{Binding CaptureInput}" Margin="0,10,0,0"/>
+          <TextBlock Grid.Row="4" Text="Debug" VerticalAlignment="Center" Margin="0,10,0,0"/>
+          <CheckBox Grid.Row="4" Grid.Column="1" Content="Keep capture route history" IsChecked="{Binding DebugLogging}" Margin="0,10,0,0"/>
         </Grid>
       </GroupBox>
 

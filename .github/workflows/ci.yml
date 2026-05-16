@@ -120,7 +120,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          RUST_LOG=info ./target/debug/deskbridge server --listen 127.0.0.1:24883 --allow mac >debug-server.log 2>&1 &
+          RUST_LOG=info ./target/debug/deskbridge server --listen 127.0.0.1:24883 --allow mac --debug-capture-log >debug-server.log 2>&1 &
           SERVER_PID=$!
           CLIENT_PID=""
           cleanup() {
@@ -156,6 +156,8 @@ jobs:
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac route-status >debug-route-status.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac route-probe --steps 2 --dx 40 --dy -1 >debug-route.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac capture-probe --steps 2 --dx 40 --dy -1 >debug-capture.out
+          ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac peer-info >debug-peer.out
+          ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac server-logs >debug-server-logs.out
           ./target/debug/deskbridge debug --server 127.0.0.1:24883 --name mac logs >debug-logs.out
           grep -q "display:" debug-display.out
           grep -q "ok: true" debug-move.out
@@ -167,6 +169,9 @@ jobs:
           grep -q "capture probe delivered and acknowledged 3 events through capture path" debug-capture.out
           grep -q "capture event 1 routed target=mac MouseAbs" debug-capture.out
           grep -q "ack seq=" debug-capture.out
+          grep -q "role=client" debug-peer.out
+          grep -q "role=server" debug-server-logs.out
+          grep -q "client accepted" debug-server-logs.out
           grep -q "debug request" debug-logs.out
 
       - name: Reconnect after server start test

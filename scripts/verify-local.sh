@@ -92,7 +92,9 @@ DEBUG_ROUTE_STATUS_OUT="$(mktemp /tmp/deskbridge-debug-route-status.XXXXXX)"
 DEBUG_ROUTE_OUT="$(mktemp /tmp/deskbridge-debug-route.XXXXXX)"
 DEBUG_CAPTURE_OUT="$(mktemp /tmp/deskbridge-debug-capture.XXXXXX)"
 DEBUG_LOGS_OUT="$(mktemp /tmp/deskbridge-debug-logs.XXXXXX)"
-RUST_LOG=info "$ROOT/target/debug/deskbridge" server --listen 127.0.0.1:24883 --allow mac >"$DEBUG_SERVER_LOG" 2>&1 &
+DEBUG_PEER_OUT="$(mktemp /tmp/deskbridge-debug-peer.XXXXXX)"
+DEBUG_SERVER_LOGS_OUT="$(mktemp /tmp/deskbridge-debug-server-logs.XXXXXX)"
+RUST_LOG=info "$ROOT/target/debug/deskbridge" server --listen 127.0.0.1:24883 --allow mac --debug-capture-log >"$DEBUG_SERVER_LOG" 2>&1 &
 DEBUG_SERVER_PID=$!
 for _ in {1..20}; do
   nc -z 127.0.0.1 24883 >/dev/null 2>&1 && break
@@ -120,6 +122,8 @@ fi
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac route-status >"$DEBUG_ROUTE_STATUS_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac route-probe --steps 2 --dx 40 --dy -1 >"$DEBUG_ROUTE_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac capture-probe --steps 2 --dx 40 --dy -1 >"$DEBUG_CAPTURE_OUT"
+"$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac peer-info >"$DEBUG_PEER_OUT"
+"$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac server-logs >"$DEBUG_SERVER_LOGS_OUT"
 "$ROOT/target/debug/deskbridge" debug --server 127.0.0.1:24883 --name mac logs >"$DEBUG_LOGS_OUT"
 if ! grep -q "display:" "$DEBUG_DISPLAY_OUT"; then
   cat "$DEBUG_DISPLAY_OUT"
@@ -174,6 +178,21 @@ fi
 if ! grep -q "debug request" "$DEBUG_LOGS_OUT"; then
   cat "$DEBUG_LOGS_OUT"
   echo "debug logs did not include target-side debug entries"
+  exit 1
+fi
+if ! grep -q "role=client" "$DEBUG_PEER_OUT"; then
+  cat "$DEBUG_PEER_OUT"
+  echo "debug peer-info did not include client metadata"
+  exit 1
+fi
+if ! grep -q "role=server" "$DEBUG_SERVER_LOGS_OUT"; then
+  cat "$DEBUG_SERVER_LOGS_OUT"
+  echo "debug server-logs did not include server metadata"
+  exit 1
+fi
+if ! grep -q "client accepted" "$DEBUG_SERVER_LOGS_OUT"; then
+  cat "$DEBUG_SERVER_LOGS_OUT"
+  echo "debug server-logs did not include connection history"
   exit 1
 fi
 

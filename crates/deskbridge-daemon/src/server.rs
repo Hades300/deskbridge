@@ -6,7 +6,13 @@ use deskbridge_core::{
     StatusKind, Welcome, read_frame, write_frame,
 };
 use std::{
-    collections::HashMap, collections::HashSet, io, net::SocketAddr, sync::Arc, time::Duration,
+    collections::HashMap,
+    collections::HashSet,
+    collections::VecDeque,
+    io,
+    net::SocketAddr,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
@@ -24,15 +30,23 @@ pub struct ServerOptions {
     pub allow: Vec<String>,
     pub demo_events: bool,
     pub capture: bool,
+    pub debug_capture_log: bool,
     pub heartbeat_ms: u64,
     pub layout: Layout,
 }
 
 type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
+type ServerDebugLog = Arc<StdMutex<VecDeque<String>>>;
 
 #[derive(Debug)]
 struct SessionHandle {
     session_id: Uuid,
+    peer: SocketAddr,
+    connected_at_ms: u128,
+    client_version: Option<String>,
+    client_platform: Option<String>,
+    client_commit: Option<String>,
+    screen_size: Option<Size>,
     shutdown_tx: mpsc::UnboundedSender<()>,
     debug_tx: mpsc::UnboundedSender<DebugEnvelope>,
     route_debug_tx: mpsc::UnboundedSender<RouteDebugEnvelope>,
@@ -75,6 +89,38 @@ struct PendingCaptureProbe {
     response_tx: oneshot::Sender<DebugResponse>,
 }
 
+struct ClientSessionRuntime<'a> {
+    options: &'a ServerOptions,
+    client_name: &'a str,
+    session_id: Uuid,
+    peer: SocketAddr,
+    shutdown_rx: &'a mut mpsc::UnboundedReceiver<()>,
+    debug_rx: &'a mut mpsc::UnboundedReceiver<DebugEnvelope>,
+    route_debug_rx: &'a mut mpsc::UnboundedReceiver<RouteDebugEnvelope>,
+    capture_tx: crate::capture::CaptureSender,
+    server_log: ServerDebugLog,
+}
+
+fn new_server_debug_log() -> ServerDebugLog {
+    Arc::new(StdMutex::new(VecDeque::with_capacity(256)))
+}
+
+fn push_server_log(log: &ServerDebugLog, line: impl Into<String>) {
+    let Ok(mut entries) = log.lock() else {
+        return;
+    };
+    if entries.len() == 256 {
+        entries.pop_front();
+    }
+    entries.push_back(format!("{} {}", deskbridge_core::now_ms(), line.into()));
+}
+
+fn server_log_snapshot(log: &ServerDebugLog) -> Vec<String> {
+    log.lock()
+        .map(|entries| entries.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
 pub async fn run(options: ServerOptions) -> Result<()> {
     let options = apply_platform_layout(options);
     let listener = TcpListener::bind(options.listen)
@@ -87,12 +133,25 @@ pub async fn run(options: ServerOptions) -> Result<()> {
         .collect::<HashSet<_>>();
     let (capture_tx, _) = crate::capture::channel();
     let sessions = SessionRegistry::default();
+    let server_log = new_server_debug_log();
 
     if options.capture {
         start_platform_capture(capture_tx.clone())?;
     }
 
     info!(listen = %options.listen, "server listening");
+    push_server_log(
+        &server_log,
+        format!(
+            "server listening listen={} screen={} capture={} debug_capture_log={} version={} platform={}",
+            options.listen,
+            options.name,
+            options.capture,
+            options.debug_capture_log,
+            crate::build_info::version(),
+            crate::build_info::platform()
+        ),
+    );
 
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -100,10 +159,23 @@ pub async fn run(options: ServerOptions) -> Result<()> {
         let allow = allow.clone();
         let capture_tx = capture_tx.clone();
         let sessions = sessions.clone();
+        let server_log = server_log.clone();
         tokio::spawn(async move {
-            if let Err(err) =
-                handle_client(stream, peer, options, allow, capture_tx, sessions).await
+            if let Err(err) = handle_client(
+                stream,
+                peer,
+                options,
+                allow,
+                capture_tx,
+                sessions,
+                server_log.clone(),
+            )
+            .await
             {
+                push_server_log(
+                    &server_log,
+                    format!("client ended peer={peer} error={err:#}"),
+                );
                 warn!(peer = %peer, error = %err, "client ended");
             }
         });
@@ -189,6 +261,7 @@ async fn handle_client(
     allow: HashSet<String>,
     capture_tx: crate::capture::CaptureSender,
     sessions: SessionRegistry,
+    server_log: ServerDebugLog,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     let hello = match read_frame(&mut stream).await {
@@ -205,6 +278,12 @@ async fn handle_client(
             return Ok(());
         }
         Err(FrameError::ForeignProtocol { magic }) => {
+            push_server_log(
+                &server_log,
+                format!(
+                    "foreign protocol peer={peer} magic={magic}; likely Input Leap/Barrier/Synergy pointed at this port"
+                ),
+            );
             warn!(
                 peer = %peer,
                 magic,
@@ -215,7 +294,19 @@ async fn handle_client(
         Err(err) => return Err(err.into()),
     };
 
-    validate_client(&hello, &allow, &mut stream).await?;
+    if let Err(err) = validate_client(&hello, &allow, &mut stream).await {
+        push_server_log(
+            &server_log,
+            format!(
+                "rejected peer={peer} screen={} role={:?} version={} platform={} error={err:#}",
+                hello.screen_name,
+                hello.role,
+                hello.app_version.as_deref().unwrap_or("unknown"),
+                hello.platform.as_deref().unwrap_or("unknown"),
+            ),
+        );
+        return Err(err);
+    }
     if hello.is_input_client() {
         apply_client_screen_size(&mut options, &hello);
     }
@@ -229,6 +320,15 @@ async fn handle_client(
     });
 
     if !hello.is_input_client() {
+        push_server_log(
+            &server_log,
+            format!(
+                "diagnostic client accepted peer={peer} target={} version={} platform={}",
+                hello.screen_name,
+                hello.app_version.as_deref().unwrap_or("unknown"),
+                hello.platform.as_deref().unwrap_or("unknown"),
+            ),
+        );
         info!(
             peer = %peer,
             screen = hello.screen_name,
@@ -237,7 +337,14 @@ async fn handle_client(
             "diagnostic client accepted"
         );
         write_frame(&mut stream, &welcome).await?;
-        return handle_diagnostic_session(&mut stream, &hello.screen_name, sessions).await;
+        return handle_diagnostic_session(
+            &mut stream,
+            &hello.screen_name,
+            &options,
+            sessions,
+            server_log,
+        )
+        .await;
     }
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
@@ -248,12 +355,25 @@ async fn handle_client(
         session_key.clone(),
         SessionHandle {
             session_id,
+            peer,
+            connected_at_ms: deskbridge_core::now_ms(),
+            client_version: hello.app_version.clone(),
+            client_platform: hello.platform.clone(),
+            client_commit: hello.build_commit.clone(),
+            screen_size: hello.screen_size,
             shutdown_tx,
             debug_tx,
             route_debug_tx,
         },
     ) {
         let _ = previous.shutdown_tx.send(());
+        push_server_log(
+            &server_log,
+            format!(
+                "replaced existing client screen={} previous_session={} new_session={}",
+                hello.screen_name, previous.session_id, session_id
+            ),
+        );
         warn!(
             peer = %peer,
             screen = hello.screen_name,
@@ -264,32 +384,73 @@ async fn handle_client(
     }
 
     info!(peer = %peer, screen = hello.screen_name, "client accepted");
+    push_server_log(
+        &server_log,
+        format!(
+            "client accepted peer={peer} screen={} session={} version={} platform={} screen_size={}",
+            hello.screen_name,
+            session_id,
+            hello.app_version.as_deref().unwrap_or("unknown"),
+            hello.platform.as_deref().unwrap_or("unknown"),
+            hello
+                .screen_size
+                .map(|size| format!("{}x{}", size.width, size.height))
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+    );
 
     write_frame(&mut stream, &welcome).await?;
 
     let result = run_client_session(
         &mut stream,
-        &options,
-        &hello.screen_name,
-        &mut shutdown_rx,
-        &mut debug_rx,
-        &mut route_debug_rx,
-        capture_tx,
+        ClientSessionRuntime {
+            options: &options,
+            client_name: &hello.screen_name,
+            session_id,
+            peer,
+            shutdown_rx: &mut shutdown_rx,
+            debug_rx: &mut debug_rx,
+            route_debug_rx: &mut route_debug_rx,
+            capture_tx,
+            server_log: server_log.clone(),
+        },
     )
     .await;
     remove_current_session(&sessions, &session_key, session_id).await;
+    match &result {
+        Ok(()) => push_server_log(
+            &server_log,
+            format!(
+                "client session ended screen={} peer={peer} session={session_id}",
+                hello.screen_name
+            ),
+        ),
+        Err(err) => push_server_log(
+            &server_log,
+            format!(
+                "client session failed screen={} peer={peer} session={session_id} error={err:#}",
+                hello.screen_name
+            ),
+        ),
+    }
     result
 }
 
 async fn run_client_session(
     mut stream: &mut TcpStream,
-    options: &ServerOptions,
-    client_name: &str,
-    shutdown_rx: &mut mpsc::UnboundedReceiver<()>,
-    debug_rx: &mut mpsc::UnboundedReceiver<DebugEnvelope>,
-    route_debug_rx: &mut mpsc::UnboundedReceiver<RouteDebugEnvelope>,
-    capture_tx: crate::capture::CaptureSender,
+    runtime: ClientSessionRuntime<'_>,
 ) -> Result<()> {
+    let ClientSessionRuntime {
+        options,
+        client_name,
+        session_id,
+        peer,
+        shutdown_rx,
+        debug_rx,
+        route_debug_rx,
+        capture_tx,
+        server_log,
+    } = runtime;
     let mut ticker = time::interval(Duration::from_secs(5));
     let mut seq = 0_u64;
     let mut demo_stage = 0_u64;
@@ -320,9 +481,29 @@ async fn run_client_session(
             }
             event = capture_rx.recv() => {
                 if let Ok(event) = event {
+                    let capture_log_line = if options.debug_capture_log {
+                        Some(describe_capture_event(&event))
+                    } else {
+                        None
+                    };
                     let probe_id = capture_probe_id(&event);
                     let capture_event = capture_event_payload(event);
                     let routed = route_capture_event(&mut demo_router, capture_event, client_name);
+
+                    if probe_id.is_none()
+                        && let Some(capture_log_line) = capture_log_line
+                    {
+                        let route_log_line = routed
+                            .as_ref()
+                            .map(|event| format!("routed target={client_name} {}", describe_input_event(event)))
+                            .unwrap_or_else(|| "not routed".to_string());
+                        push_server_log(
+                            &server_log,
+                            format!(
+                                "capture session={session_id} peer={peer} source={capture_log_line} {route_log_line}"
+                            ),
+                        );
+                    }
 
                     if let Some(request_id) = probe_id
                         && let Some(probe) = pending_capture_probes.get_mut(&request_id)
@@ -557,10 +738,24 @@ async fn run_client_session(
 async fn handle_diagnostic_session(
     stream: &mut TcpStream,
     target_screen: &str,
+    options: &ServerOptions,
     sessions: SessionRegistry,
+    server_log: ServerDebugLog,
 ) -> Result<()> {
     match time::timeout(Duration::from_secs(5), read_frame(stream)).await {
         Ok(Ok(Message::DebugRequest(request))) => match request.command.clone() {
+            DebugCommand::ServerLogs => {
+                let response = build_server_logs_response(
+                    request.request_id,
+                    target_screen,
+                    options,
+                    &sessions,
+                    &server_log,
+                )
+                .await;
+                write_frame(stream, &Message::DebugResponse(response)).await?;
+                Ok(())
+            }
             DebugCommand::RouteProbe {
                 edge,
                 steps,
@@ -636,6 +831,60 @@ struct RouteProbeOptions {
     steps: u32,
     dx: i32,
     dy: i32,
+}
+
+async fn build_server_logs_response(
+    request_id: Uuid,
+    target_screen: &str,
+    options: &ServerOptions,
+    sessions: &SessionRegistry,
+    server_log: &ServerDebugLog,
+) -> DebugResponse {
+    let mut logs = crate::build_info::lines();
+    logs.push("role=server".to_string());
+    logs.push(format!("listen={}", options.listen));
+    logs.push(format!("server_screen={}", options.name));
+    logs.push(format!("target_screen={target_screen}"));
+    logs.push(format!("allowed_clients={}", options.allow.join(",")));
+    logs.push(format!("capture={}", options.capture));
+    logs.push(format!("debug_capture_log={}", options.debug_capture_log));
+    logs.push(format!("demo_events={}", options.demo_events));
+    logs.push(format!("heartbeat_ms={}", options.heartbeat_ms));
+
+    let sessions = sessions.lock().await;
+    if sessions.is_empty() {
+        logs.push("active_sessions=none".to_string());
+    } else {
+        logs.push(format!("active_sessions={}", sessions.len()));
+        for (screen, session) in sessions.iter() {
+            logs.push(format!(
+                "session: screen={screen} id={} peer={} version={} platform={} commit={} screen_size={} connected_at_ms={} uptime_ms={}",
+                session.session_id,
+                session.peer,
+                session.client_version.as_deref().unwrap_or("unknown"),
+                session.client_platform.as_deref().unwrap_or("unknown"),
+                session.client_commit.as_deref().unwrap_or("unknown"),
+                session
+                    .screen_size
+                    .map(|size| format!("{}x{}", size.width, size.height))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                session.connected_at_ms,
+                deskbridge_core::now_ms().saturating_sub(session.connected_at_ms)
+            ));
+        }
+    }
+    drop(sessions);
+
+    logs.push("history:".to_string());
+    logs.extend(server_log_snapshot(server_log));
+
+    DebugResponse {
+        request_id,
+        ok: true,
+        message: "server debug log read".to_string(),
+        display: None,
+        logs,
+    }
 }
 
 async fn forward_route_debug_request(
@@ -1195,6 +1444,22 @@ fn describe_input_event(event: &InputEvent) -> String {
     }
 }
 
+fn describe_capture_event(event: &CaptureEvent) -> String {
+    match event {
+        CaptureEvent::LocalPointer { x, y } => format!("LocalPointer x={x} y={y}"),
+        CaptureEvent::Input(event) => describe_input_event(event),
+        CaptureEvent::ProbeLocalPointer { x, y, request_id } => {
+            format!("ProbeLocalPointer request={request_id} x={x} y={y}")
+        }
+        CaptureEvent::ProbeInput { event, request_id } => {
+            format!(
+                "ProbeInput request={request_id} {}",
+                describe_input_event(event)
+            )
+        }
+    }
+}
+
 fn demo_transition_point(
     layout: &Layout,
     server_name: &str,
@@ -1266,6 +1531,7 @@ mod tests {
             allow: vec!["mac".to_string()],
             demo_events: false,
             capture: false,
+            debug_capture_log: false,
             heartbeat_ms: DEFAULT_HEARTBEAT_MS,
             layout: test_layout(),
         }
@@ -1279,12 +1545,14 @@ mod tests {
         let allow = HashSet::from(["mac".to_string()]);
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
+        let server_log = new_server_debug_log();
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
             let capture_tx = capture_tx.clone();
             let sessions = sessions.clone();
+            let server_log = server_log.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1295,6 +1563,7 @@ mod tests {
                         allow.clone(),
                         capture_tx.clone(),
                         sessions.clone(),
+                        server_log.clone(),
                     ));
                 }
             }
@@ -1350,12 +1619,14 @@ mod tests {
         let allow = HashSet::from(["mac".to_string()]);
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
+        let server_log = new_server_debug_log();
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
             let capture_tx = capture_tx.clone();
             let sessions = sessions.clone();
+            let server_log = server_log.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1366,6 +1637,7 @@ mod tests {
                         allow.clone(),
                         capture_tx.clone(),
                         sessions.clone(),
+                        server_log.clone(),
                     ));
                 }
             }
@@ -1455,12 +1727,14 @@ mod tests {
         let allow = HashSet::from(["mac".to_string()]);
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
+        let server_log = new_server_debug_log();
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
             let capture_tx = capture_tx.clone();
             let sessions = sessions.clone();
+            let server_log = server_log.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1471,6 +1745,7 @@ mod tests {
                         allow.clone(),
                         capture_tx.clone(),
                         sessions.clone(),
+                        server_log.clone(),
                     ));
                 }
             }
@@ -1558,12 +1833,14 @@ mod tests {
         let allow = HashSet::from(["mac".to_string()]);
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
+        let server_log = new_server_debug_log();
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
             let capture_tx = capture_tx.clone();
             let sessions = sessions.clone();
+            let server_log = server_log.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1574,6 +1851,7 @@ mod tests {
                         allow.clone(),
                         capture_tx.clone(),
                         sessions.clone(),
+                        server_log.clone(),
                     ));
                 }
             }
@@ -1670,12 +1948,14 @@ mod tests {
         let allow = HashSet::from(["mac".to_string()]);
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
+        let server_log = new_server_debug_log();
 
         tokio::spawn({
             let options = options.clone();
             let allow = allow.clone();
             let capture_tx = capture_tx.clone();
             let sessions = sessions.clone();
+            let server_log = server_log.clone();
             async move {
                 for _ in 0..2 {
                     let (stream, peer) = listener.accept().await.unwrap();
@@ -1686,6 +1966,7 @@ mod tests {
                         allow.clone(),
                         capture_tx.clone(),
                         sessions.clone(),
+                        server_log.clone(),
                     ));
                 }
             }
@@ -1748,6 +2029,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diagnostic_server_logs_are_available_without_target_client() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let options = test_options(listen);
+        let allow = HashSet::from(["mac".to_string()]);
+        let (capture_tx, _) = crate::capture::channel();
+        let sessions = SessionRegistry::default();
+        let server_log = new_server_debug_log();
+        push_server_log(&server_log, "test history entry");
+
+        tokio::spawn({
+            let sessions = sessions.clone();
+            let server_log = server_log.clone();
+            async move {
+                let (stream, peer) = listener.accept().await.unwrap();
+                handle_client(
+                    stream, peer, options, allow, capture_tx, sessions, server_log,
+                )
+                .await
+                .unwrap();
+            }
+        });
+
+        let mut diag = TcpStream::connect(listen).await.unwrap();
+        write_frame(&mut diag, &Message::Hello(Hello::diagnostic("mac")))
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_frame(&mut diag).await.unwrap(),
+            Message::Welcome(_)
+        ));
+
+        let request_id = Uuid::new_v4();
+        write_frame(
+            &mut diag,
+            &Message::DebugRequest(DebugRequest {
+                request_id,
+                command: DebugCommand::ServerLogs,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = match tokio::time::timeout(Duration::from_secs(1), read_frame(&mut diag))
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Message::DebugResponse(response) => response,
+            other => panic!("expected server logs debug response, got {other:?}"),
+        };
+        assert_eq!(response.request_id, request_id);
+        assert!(response.ok);
+        assert!(response.logs.iter().any(|line| line == "role=server"));
+        assert!(
+            response
+                .logs
+                .iter()
+                .any(|line| line == "active_sessions=none")
+        );
+        assert!(
+            response
+                .logs
+                .iter()
+                .any(|line| line.contains("test history entry"))
+        );
+    }
+
+    #[tokio::test]
     async fn ended_client_session_is_removed_from_registry() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listen = listener.local_addr().unwrap();
@@ -1755,14 +2105,18 @@ mod tests {
         let allow = HashSet::from(["mac".to_string()]);
         let (capture_tx, _) = crate::capture::channel();
         let sessions = SessionRegistry::default();
+        let server_log = new_server_debug_log();
 
         let server_task = tokio::spawn({
             let sessions = sessions.clone();
+            let server_log = server_log.clone();
             async move {
                 let (stream, peer) = listener.accept().await.unwrap();
-                handle_client(stream, peer, options, allow, capture_tx, sessions)
-                    .await
-                    .unwrap();
+                handle_client(
+                    stream, peer, options, allow, capture_tx, sessions, server_log,
+                )
+                .await
+                .unwrap();
             }
         });
 

@@ -41,6 +41,12 @@ pub struct Hello {
     pub capabilities: Vec<Capability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_size: Option<Size>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_commit: Option<String>,
 }
 
 impl Hello {
@@ -58,6 +64,9 @@ impl Hello {
                 Capability::LayoutV1,
             ],
             screen_size: None,
+            app_version: None,
+            platform: None,
+            build_commit: None,
         }
     }
 
@@ -70,6 +79,9 @@ impl Hello {
             crypto: CryptoMode::None,
             capabilities: vec![Capability::Diagnostics],
             screen_size: None,
+            app_version: None,
+            platform: None,
+            build_commit: None,
         }
     }
 
@@ -87,6 +99,9 @@ impl Hello {
                 Capability::LayoutV1,
             ],
             screen_size: None,
+            app_version: None,
+            platform: None,
+            build_commit: None,
         }
     }
 
@@ -96,6 +111,18 @@ impl Hello {
 
     pub fn with_screen_size(mut self, screen_size: Size) -> Self {
         self.screen_size = Some(screen_size);
+        self
+    }
+
+    pub fn with_app_metadata(
+        mut self,
+        version: impl Into<String>,
+        platform: impl Into<String>,
+        commit: Option<&str>,
+    ) -> Self {
+        self.app_version = Some(version.into());
+        self.platform = Some(platform.into());
+        self.build_commit = commit.map(ToString::to_string);
         self
     }
 }
@@ -164,7 +191,9 @@ pub struct InputPacket {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DebugCommand {
     DisplayInfo,
+    PeerInfo,
     RecentLogs,
+    ServerLogs,
     MoveMouse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x: Option<i32>,
@@ -311,6 +340,28 @@ mod tests {
                 dx: 3,
                 dy: -4,
             },
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn debug_peer_info_round_trips() {
+        let request = Message::DebugRequest(DebugRequest {
+            request_id: Uuid::new_v4(),
+            command: DebugCommand::PeerInfo,
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn debug_server_logs_round_trips() {
+        let request = Message::DebugRequest(DebugRequest {
+            request_id: Uuid::new_v4(),
+            command: DebugCommand::ServerLogs,
         });
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: Message = serde_json::from_str(&encoded).unwrap();

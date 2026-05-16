@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 pub async fn run(server: SocketAddr, target: String, command: DebugCommand) -> Result<()> {
     println!("DeskBridge debug");
+    println!("local_version: {}", crate::build_info::version());
+    println!("local_platform: {}", crate::build_info::platform());
     println!("server: {server}");
     println!("target: {target}");
 
@@ -18,7 +20,15 @@ pub async fn run(server: SocketAddr, target: String, command: DebugCommand) -> R
         .context("tcp connect failed")?;
     let mut stream = stream;
 
-    write_frame(&mut stream, &Message::Hello(Hello::diagnostic(target))).await?;
+    write_frame(
+        &mut stream,
+        &Message::Hello(Hello::diagnostic(target).with_app_metadata(
+            crate::build_info::version(),
+            crate::build_info::platform(),
+            crate::build_info::commit(),
+        )),
+    )
+    .await?;
     match timeout(Duration::from_secs(3), read_frame(&mut stream)).await {
         Ok(Ok(Message::Welcome(welcome))) => {
             println!("server_name: {}", welcome.server_name);

@@ -23,6 +23,7 @@ Implemented:
 - macOS app supervision for reconnect/restart behavior when the daemon exits.
 - Windows WPF admin panel scaffold for server configuration and `--capture` launch.
 - macOS input injection backend through `enigo` plus bounded CoreGraphics pointer warping.
+- Remote debug control for client display info, peer metadata, target logs, server logs, route probes, and capture-path probes.
 
 Not complete beyond the MVP:
 
@@ -83,9 +84,11 @@ Run a server:
 deskbridge server --listen 0.0.0.0:24800 --name windows --allow mac
 deskbridge server --config examples/deskbridge.json
 deskbridge server --config examples/deskbridge.json --capture
+deskbridge server --config examples/deskbridge.json --capture --debug-capture-log
 ```
 
 `--capture` is available on Windows and macOS. On macOS, the server process needs Accessibility and Input Monitoring permissions because it installs a CoreGraphics event tap.
+`--debug-capture-log` keeps recent capture and routing events in the server-side debug ring without requiring the user to copy console output.
 
 Run a macOS client:
 
@@ -99,6 +102,7 @@ Run diagnostics:
 ```bash
 deskbridge diag --server 192.168.2.5:24800 --name mac
 deskbridge diag --config examples/deskbridge.json
+deskbridge version
 deskbridge display-info
 ```
 
@@ -106,14 +110,17 @@ Send debug commands through the server to the connected Mac client:
 
 ```bash
 deskbridge debug --server 192.168.2.5:24800 --name mac display-info
+deskbridge debug --server 192.168.2.5:24800 --name mac peer-info
 deskbridge debug --server 192.168.2.5:24800 --name mac move-mouse --dx 20 --dy 0
+deskbridge debug --server 192.168.2.5:24800 --name mac server-logs
 deskbridge debug --server 192.168.2.5:24800 --name mac route-status
 deskbridge debug --server 192.168.2.5:24800 --name mac route-probe --steps 3 --dx 80 --dy -2
 deskbridge debug --server 192.168.2.5:24800 --name mac capture-probe --steps 3 --dx 80 --dy -2
 deskbridge debug --server 192.168.2.5:24800 --name mac logs
 ```
 
-The debug command uses the existing DeskBridge connection, so the Mac does not need to open an inbound port. `display-info` returns the target display and pointer location, `move-mouse` runs the same target-side input path as normal remote control, and `logs` returns recent target-side debug entries for the active client session.
+The debug command uses the existing DeskBridge connection, so the Mac does not need to open an inbound port. `display-info` returns the target display and pointer location, `peer-info` returns the target client's build/platform/runtime metadata, `move-mouse` runs the same target-side input path as normal remote control, and `logs` returns recent target-side debug entries for the active client session.
+`server-logs` is answered directly by the server and includes build metadata, active sessions, connected client versions, and recent connection/capture history.
 `route-status` is server-side and reports the effective screen sizes, active route screen, and configured edge mappings used by the current target client session.
 `route-probe` is server-side: the server uses its current layout to synthesize an edge crossing to the target client, sends the resulting `MouseAbs` plus continued `MouseMove` packets, and waits for client acknowledgements. This validates the live server-to-client route without touching the Windows mouse.
 `capture-probe` is also server-side, but injects synthetic `LocalPointer` and `MouseMove` events into the server capture channel first. This validates the capture routing branch; if `capture-probe` passes but physical crossing fails, the remaining issue is in the platform capture hook or actual edge coordinates.

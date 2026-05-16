@@ -93,7 +93,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     let mut ticker = time::interval(heartbeat);
     let mut seq = 0_u64;
     let mut received_events = 0_u64;
-    let mut debug_state = ClientDebugState::new();
+    let mut debug_state = ClientDebugState::new(options);
     debug_state.push(format!("connected to server {}", options.server));
 
     loop {
@@ -150,12 +150,20 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
 #[derive(Debug)]
 struct ClientDebugState {
     logs: VecDeque<String>,
+    server: SocketAddr,
+    name: String,
+    dry_run: bool,
+    started_at_ms: u128,
 }
 
 impl ClientDebugState {
-    fn new() -> Self {
+    fn new(options: &ClientOptions) -> Self {
         Self {
             logs: VecDeque::with_capacity(64),
+            server: options.server,
+            name: options.name.clone(),
+            dry_run: options.dry_run,
+            started_at_ms: deskbridge_core::now_ms(),
         }
     }
 
@@ -169,6 +177,24 @@ impl ClientDebugState {
 
     fn recent_logs(&self) -> Vec<String> {
         self.logs.iter().cloned().collect()
+    }
+
+    fn peer_info_logs(&self) -> Vec<String> {
+        let mut logs = crate::build_info::lines();
+        logs.push("role=client".to_string());
+        logs.push(format!("screen={}", self.name));
+        logs.push(format!("server={}", self.server));
+        logs.push(format!("dry_run={}", self.dry_run));
+        logs.push(format!("started_at_ms={}", self.started_at_ms));
+        logs.push(format!(
+            "uptime_ms={}",
+            deskbridge_core::now_ms().saturating_sub(self.started_at_ms)
+        ));
+        match std::env::current_exe() {
+            Ok(path) => logs.push(format!("process={}", path.display())),
+            Err(err) => logs.push(format!("process=unavailable ({err})")),
+        }
+        logs
     }
 }
 
@@ -192,6 +218,13 @@ async fn handle_debug_request(
             },
             Err(err) => debug_response_error(request.request_id, format!("{err:#}")),
         },
+        DebugCommand::PeerInfo => DebugResponse {
+            request_id: request.request_id,
+            ok: true,
+            message: "client peer info read".to_string(),
+            display: None,
+            logs: debug_state.peer_info_logs(),
+        },
         DebugCommand::RecentLogs => DebugResponse {
             request_id: request.request_id,
             ok: true,
@@ -205,9 +238,10 @@ async fn handle_debug_request(
             .with_request_id(request.request_id),
         DebugCommand::RouteProbe { .. }
         | DebugCommand::RouteStatus
-        | DebugCommand::CaptureProbe { .. } => debug_response_error(
+        | DebugCommand::CaptureProbe { .. }
+        | DebugCommand::ServerLogs => debug_response_error(
             request.request_id,
-            "route and capture debug commands are handled by the server, not the target client"
+            "server-side debug commands are handled by the server, not the target client"
                 .to_string(),
         ),
     };
@@ -278,7 +312,11 @@ fn debug_response_error(request_id: uuid::Uuid, message: String) -> DebugRespons
 }
 
 fn client_hello(options: &ClientOptions) -> Hello {
-    let hello = Hello::client(options.name.clone());
+    let hello = Hello::client(options.name.clone()).with_app_metadata(
+        crate::build_info::version(),
+        crate::build_info::platform(),
+        crate::build_info::commit(),
+    );
     if options.dry_run {
         return hello;
     }

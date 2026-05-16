@@ -5,6 +5,8 @@ use tokio::{net::TcpStream, time::timeout};
 
 pub async fn run(server: SocketAddr, name: String) -> Result<()> {
     println!("DeskBridge diagnostics");
+    println!("local_version: {}", crate::build_info::version());
+    println!("local_platform: {}", crate::build_info::platform());
     println!("server: {server}");
     println!("screen: {name}");
 
@@ -15,7 +17,15 @@ pub async fn run(server: SocketAddr, name: String) -> Result<()> {
     println!("tcp: ok");
 
     let mut stream = stream;
-    write_frame(&mut stream, &Message::Hello(Hello::diagnostic(name))).await?;
+    write_frame(
+        &mut stream,
+        &Message::Hello(Hello::diagnostic(name).with_app_metadata(
+            crate::build_info::version(),
+            crate::build_info::platform(),
+            crate::build_info::commit(),
+        )),
+    )
+    .await?;
     match timeout(Duration::from_secs(3), read_frame(&mut stream)).await {
         Ok(Ok(Message::Welcome(welcome))) => {
             println!("protocol: ok");

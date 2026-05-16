@@ -27,6 +27,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private Brush _statusBrush = Brushes.Orange;
     private string _diagnostics = "No diagnostics yet.";
     private bool _captureInput = true;
+    private bool _debugLogging = true;
     private string _serverName = "windows";
     private string _allowedClient = "mac";
     private string _clientPosition = "Right";
@@ -42,6 +43,12 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     {
         get => _captureInput;
         set => SetField(ref _captureInput, value);
+    }
+
+    public bool DebugLogging
+    {
+        get => _debugLogging;
+        set => SetField(ref _debugLogging, value);
     }
 
     public string ServerName
@@ -122,14 +129,22 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             return;
         }
 
+        var serverArgs = $"server --config \"{ConfigPath}\"";
+        if (CaptureInput)
+        {
+            serverArgs += " --capture";
+        }
+        if (DebugLogging)
+        {
+            serverArgs += " --debug-capture-log";
+        }
+
         var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
                 FileName = daemonPath,
-                Arguments = CaptureInput
-                    ? $"server --config \"{ConfigPath}\" --capture"
-                    : $"server --config \"{ConfigPath}\"",
+                Arguments = serverArgs,
                 WorkingDirectory = AppContext.BaseDirectory,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -162,7 +177,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             StatusText = $"Running on {ListenAddress}";
             StatusBrush = Brushes.Green;
             Diagnostics =
-                $"Started DeskBridge server.\nListen: {ListenAddress}\nScreen: {ServerName}\nAllowed client: {AllowedClient}\nDaemon: {daemonPath}";
+                $"Started DeskBridge server.\nListen: {ListenAddress}\nScreen: {ServerName}\nAllowed client: {AllowedClient}\nDebug capture log: {DebugLogging}\nDaemon: {daemonPath}";
         }
         catch (Exception ex)
         {
@@ -250,15 +265,38 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private void Diagnose()
     {
         var port = ListenPort();
-        Diagnostics =
-            $"Status: {StatusText}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nAllowed client: {AllowedClient}\nPosition: {ClientPosition}\n" +
-            $"Daemon: {LocateDaemon()}\nDeskBridge processes:\n{DescribeDeskBridgeProcesses()}\n\n" +
+        var daemon = LocateDaemon();
+        var localServer = $"127.0.0.1:{port}";
+        var sections = new List<string>
+        {
+            $"Status: {StatusText}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nAllowed client: {AllowedClient}\nPosition: {ClientPosition}\nDebug capture log: {DebugLogging}\n" +
+            $"Daemon: {daemon}\nDeskBridge processes:\n{DescribeDeskBridgeProcesses()}",
+        };
+
+        if (File.Exists(daemon))
+        {
+            sections.Add("Local daemon version:\n" + RunDaemonCommand(daemon, new[] { "version" }, 3000));
+            sections.Add("Server debug log:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", AllowedClient, "server-logs" }));
+            sections.Add("Route status:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", AllowedClient, "route-status" }));
+            sections.Add("Client peer info:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", AllowedClient, "peer-info" }));
+            sections.Add("Client recent log:\n" + RunDaemonCommand(daemon, new[] { "debug", "--server", localServer, "--name", AllowedClient, "logs" }));
+        }
+
+        sections.Add(
             "From the Mac, run:\n" +
-            $"deskbridge diag --server <WINDOWS_LAN_IP>:{port} --name mac\n\n" +
+            $"deskbridge diag --server <WINDOWS_LAN_IP>:{port} --name mac\n" +
+            $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac server-logs\n" +
+            $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac route-status\n" +
+            $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac route-probe --steps 3 --dx 80 --dy -2\n" +
+            $"deskbridge debug --server <WINDOWS_LAN_IP>:{port} --name mac capture-probe --steps 3 --dx 80 --dy -2");
+
+        sections.Add(
             "On Windows, verify the listener with:\n" +
             $"Get-NetTCPConnection -LocalPort {port} -State Listen\n\n" +
-            "If logs show IHEL from 127.0.0.1, find the local process connecting to this port with:\n" +
-            $"Get-NetTCPConnection -RemotePort {port} -State Established | Select-Object LocalAddress,LocalPort,OwningProcess";
+            "If logs show non-DeskBridge clients hitting this port, find the process with:\n" +
+            $"Get-NetTCPConnection -RemotePort {port} -State Established | Select-Object LocalAddress,LocalPort,OwningProcess");
+
+        Diagnostics = string.Join("\n\n---\n\n", sections);
     }
 
     private void OpenFirewall()
@@ -362,6 +400,48 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             .ToArray();
 
         return descriptions.Length == 0 ? "none found" : string.Join("\n", descriptions);
+    }
+
+    private static string RunDaemonCommand(string daemonPath, string[] arguments, int timeoutMs = 8000)
+    {
+        try
+        {
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = daemonPath,
+                    WorkingDirectory = AppContext.BaseDirectory,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                },
+            };
+
+            foreach (var argument in arguments)
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            process.Start();
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(timeoutMs))
+            {
+                process.Kill(entireProcessTree: true);
+                return $"Timed out after {timeoutMs}ms.";
+            }
+
+            var output = outputTask.GetAwaiter().GetResult();
+            var error = errorTask.GetAwaiter().GetResult();
+            var text = string.Join("\n", new[] { output, error }.Where(value => !string.IsNullOrWhiteSpace(value))).Trim();
+            return string.IsNullOrWhiteSpace(text) ? $"Exited with code {process.ExitCode}." : text;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)

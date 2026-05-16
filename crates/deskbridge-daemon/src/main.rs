@@ -1,3 +1,4 @@
+mod build_info;
 mod capture;
 mod client;
 mod debugctl;
@@ -57,6 +58,8 @@ enum Command {
         demo_events: bool,
         #[arg(long, default_value_t = false)]
         capture: bool,
+        #[arg(long, default_value_t = false)]
+        debug_capture_log: bool,
     },
     /// Diagnose reachability and protocol handshake.
     Diag {
@@ -106,6 +109,8 @@ enum Command {
         #[arg(long, default_value_t = false)]
         prompt: bool,
     },
+    /// Print the local DeskBridge build and protocol version.
+    Version,
     /// Print the display size and mouse location seen by DeskBridge.
     DisplayInfo,
     /// Move the local pointer through the same injection path used by the client.
@@ -132,8 +137,12 @@ enum Command {
 enum DebugCliCommand {
     /// Read the target client's display size and current mouse location.
     DisplayInfo,
+    /// Read the target client's build, platform, and runtime metadata.
+    PeerInfo,
     /// Read recent target-side debug log lines kept by the client session.
     Logs,
+    /// Read recent server-side diagnostic and connection log lines.
+    ServerLogs,
     /// Ask the target client to move its local pointer.
     MoveMouse {
         #[arg(long)]
@@ -219,6 +228,7 @@ async fn main() -> Result<()> {
             allow,
             demo_events,
             capture,
+            debug_capture_log,
         } => {
             let config = load_config(config)?;
             let listen = config
@@ -247,6 +257,7 @@ async fn main() -> Result<()> {
                 allow,
                 demo_events,
                 capture,
+                debug_capture_log,
                 heartbeat_ms,
                 layout,
             })
@@ -346,6 +357,13 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Permissions { prompt } => permissions::run(prompt),
+        Command::Version => {
+            println!("DeskBridge");
+            for line in build_info::lines() {
+                println!("{line}");
+            }
+            Ok(())
+        }
         Command::DisplayInfo => {
             let info = input::display_info()?;
             println!("DeskBridge display info");
@@ -378,7 +396,9 @@ async fn main() -> Result<()> {
 fn debug_cli_command(command: DebugCliCommand) -> DebugCommand {
     match command {
         DebugCliCommand::DisplayInfo => DebugCommand::DisplayInfo,
+        DebugCliCommand::PeerInfo => DebugCommand::PeerInfo,
         DebugCliCommand::Logs => DebugCommand::RecentLogs,
+        DebugCliCommand::ServerLogs => DebugCommand::ServerLogs,
         DebugCliCommand::MoveMouse { x, y, dx, dy } => DebugCommand::MoveMouse { x, y, dx, dy },
         DebugCliCommand::RouteProbe {
             edge,
