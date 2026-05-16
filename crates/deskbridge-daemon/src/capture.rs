@@ -28,13 +28,14 @@ pub mod windows {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG,
-        MSLLHOOKSTRUCT, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-        WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-        WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
-        WM_SYSKEYUP,
+        MSLLHOOKSTRUCT, SM_CXSCREEN, SM_CYSCREEN, SetWindowsHookExW, TranslateMessage,
+        UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+        WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
     };
 
     static CAPTURE_TX: OnceLock<Mutex<CaptureSender>> = OnceLock::new();
+    static LAST_MOUSE_POS: OnceLock<Mutex<Option<(i32, i32)>>> = OnceLock::new();
 
     pub struct WindowsHookCapture {
         mouse_hook: HHOOK,
@@ -111,10 +112,17 @@ pub mod windows {
             .map_err(|err| anyhow!("failed to spawn windows capture thread: {err}"))
     }
 
+    pub fn primary_screen_size() -> Option<(u32, u32)> {
+        let width =
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CXSCREEN) };
+        let height =
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(SM_CYSCREEN) };
+        (width > 0 && height > 0).then_some((width as u32, height as u32))
+    }
+
     unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if code == HC_ACTION as i32 {
-            let event = unsafe { mouse_event_from_hook(wparam, lparam) };
-            if let Some(event) = event {
+            for event in unsafe { mouse_events_from_hook(wparam, lparam) } {
                 send(event);
             }
         }
@@ -133,25 +141,44 @@ pub mod windows {
         unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
     }
 
-    unsafe fn mouse_event_from_hook(wparam: WPARAM, lparam: LPARAM) -> Option<CaptureEvent> {
+    unsafe fn mouse_events_from_hook(wparam: WPARAM, lparam: LPARAM) -> Vec<CaptureEvent> {
         let hook = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
-        Some(match wparam as u32 {
-            WM_MOUSEMOVE => CaptureEvent::LocalPointer {
-                x: hook.pt.x.max(0) as u32,
-                y: hook.pt.y.max(0) as u32,
-            },
-            WM_LBUTTONDOWN => mouse_button(Button::Left, KeyState::Pressed),
-            WM_LBUTTONUP => mouse_button(Button::Left, KeyState::Released),
-            WM_RBUTTONDOWN => mouse_button(Button::Right, KeyState::Pressed),
-            WM_RBUTTONUP => mouse_button(Button::Right, KeyState::Released),
-            WM_MBUTTONDOWN => mouse_button(Button::Middle, KeyState::Pressed),
-            WM_MBUTTONUP => mouse_button(Button::Middle, KeyState::Released),
+
+        match wparam as u32 {
+            WM_MOUSEMOVE => {
+                let x = hook.pt.x;
+                let y = hook.pt.y;
+                let mut events = vec![CaptureEvent::LocalPointer {
+                    x: x.max(0) as u32,
+                    y: y.max(0) as u32,
+                }];
+
+                let last = LAST_MOUSE_POS.get_or_init(|| Mutex::new(None));
+                if let Ok(mut last) = last.lock() {
+                    if let Some((last_x, last_y)) = *last {
+                        let dx = x.saturating_sub(last_x);
+                        let dy = y.saturating_sub(last_y);
+                        if dx != 0 || dy != 0 {
+                            events.push(CaptureEvent::Input(InputEvent::MouseMove { dx, dy }));
+                        }
+                    }
+                    *last = Some((x, y));
+                }
+
+                events
+            }
+            WM_LBUTTONDOWN => vec![mouse_button(Button::Left, KeyState::Pressed)],
+            WM_LBUTTONUP => vec![mouse_button(Button::Left, KeyState::Released)],
+            WM_RBUTTONDOWN => vec![mouse_button(Button::Right, KeyState::Pressed)],
+            WM_RBUTTONUP => vec![mouse_button(Button::Right, KeyState::Released)],
+            WM_MBUTTONDOWN => vec![mouse_button(Button::Middle, KeyState::Pressed)],
+            WM_MBUTTONUP => vec![mouse_button(Button::Middle, KeyState::Released)],
             WM_MOUSEWHEEL => {
                 let delta = ((hook.mouseData >> 16) as i16) as i32;
-                CaptureEvent::Input(InputEvent::Wheel { dx: 0, dy: delta })
+                vec![CaptureEvent::Input(InputEvent::Wheel { dx: 0, dy: delta })]
             }
-            _ => return None,
-        })
+            _ => Vec::new(),
+        }
     }
 
     unsafe fn keyboard_event_from_hook(wparam: WPARAM, lparam: LPARAM) -> Option<CaptureEvent> {

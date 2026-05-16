@@ -11,9 +11,7 @@ pub struct InputRouter {
     layout: Layout,
     local_screen: String,
     active_screen: String,
-    active_exit_edge: Option<Edge>,
     edge_threshold: u32,
-    release_threshold: u32,
 }
 
 impl InputRouter {
@@ -32,9 +30,7 @@ impl InputRouter {
             active_screen: local_screen.clone(),
             local_screen,
             layout,
-            active_exit_edge: None,
             edge_threshold: 2,
-            release_threshold: 32,
         })
     }
 
@@ -47,31 +43,18 @@ impl InputRouter {
         self
     }
 
-    pub fn with_release_threshold(mut self, threshold: u32) -> Self {
-        self.release_threshold = threshold;
-        self
-    }
-
     pub fn release_to_local(&mut self) {
         self.active_screen.clone_from(&self.local_screen);
-        self.active_exit_edge = None;
     }
 
     pub fn observe_local_pointer(&mut self, x: u32, y: u32) -> Option<RoutedInput> {
         if self.active_screen != self.local_screen {
-            if self
-                .active_exit_edge
-                .is_none_or(|edge| self.pointer_released_from_edge(edge, x, y))
-            {
-                self.release_to_local();
-            }
             return None;
         }
 
         let edge = self.edge_for_pointer(x, y)?;
         let transition = self.layout.transition(&self.local_screen, edge, x, y)?;
         self.active_screen.clone_from(&transition.target_screen);
-        self.active_exit_edge = Some(edge);
 
         Some(RoutedInput {
             target_screen: transition.target_screen,
@@ -116,27 +99,6 @@ impl InputRouter {
         }
 
         None
-    }
-
-    fn pointer_released_from_edge(&self, edge: Edge, x: u32, y: u32) -> bool {
-        let Some(screen) = self
-            .layout
-            .screens
-            .iter()
-            .find(|screen| screen.name == self.local_screen)
-        else {
-            return true;
-        };
-
-        let max_x = screen.size.width.saturating_sub(1);
-        let max_y = screen.size.height.saturating_sub(1);
-
-        match edge {
-            Edge::Left => x > self.release_threshold,
-            Edge::Right => max_x.saturating_sub(x) > self.release_threshold,
-            Edge::Top => y > self.release_threshold,
-            Edge::Bottom => max_y.saturating_sub(y) > self.release_threshold,
-        }
     }
 }
 
@@ -214,19 +176,20 @@ mod tests {
     }
 
     #[test]
-    fn local_pointer_moving_back_inside_releases_remote_screen() {
+    fn local_pointer_updates_do_not_release_remote_screen() {
         let mut router = InputRouter::new(layout(), "windows").unwrap();
         router.observe_local_pointer(1919, 540).unwrap();
         assert_eq!(router.active_screen(), "mac");
 
         assert_eq!(router.observe_local_pointer(1800, 540), None);
-        assert_eq!(router.active_screen(), "windows");
-        assert_eq!(
-            router.route_if_remote_active(InputEvent::Key {
+        assert_eq!(router.active_screen(), "mac");
+
+        let routed = router
+            .route_if_remote_active(InputEvent::Key {
                 key: "a".to_string(),
                 state: crate::KeyState::Clicked,
-            }),
-            None
-        );
+            })
+            .unwrap();
+        assert_eq!(routed.target_screen, "mac");
     }
 }

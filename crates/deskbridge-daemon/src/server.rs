@@ -28,6 +28,7 @@ pub struct ServerOptions {
 type SessionRegistry = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<()>>>>;
 
 pub async fn run(options: ServerOptions) -> Result<()> {
+    let options = apply_platform_layout(options);
     let listener = TcpListener::bind(options.listen)
         .await
         .with_context(|| format!("failed to bind {}", options.listen))?;
@@ -59,6 +60,31 @@ pub async fn run(options: ServerOptions) -> Result<()> {
             }
         });
     }
+}
+
+fn apply_platform_layout(options: ServerOptions) -> ServerOptions {
+    #[cfg(target_os = "windows")]
+    {
+        let mut options = options;
+        if let Some((width, height)) = crate::capture::windows::primary_screen_size()
+            && let Some(screen) = options
+                .layout
+                .screens
+                .iter_mut()
+                .find(|screen| screen.name == options.name)
+        {
+            screen.size.width = width;
+            screen.size.height = height;
+            info!(
+                screen = options.name,
+                width, height, "using platform screen size for routing"
+            );
+        }
+        options
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    options
 }
 
 async fn handle_client(

@@ -172,6 +172,7 @@ final class DeskBridgeModel: ObservableObject {
             self.process = process
             connected = false
             status = "Connecting"
+            markConnectedIfProcessStaysAlive(process)
         } catch {
             connected = false
             status = "Failed to launch"
@@ -267,6 +268,20 @@ final class DeskBridgeModel: ObservableObject {
             restartScheduled = false
             guard shouldStayConnected, autoReconnect else { return }
             launchClient()
+        }
+    }
+
+    private func markConnectedIfProcessStaysAlive(_ launchedProcess: Process) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard process === launchedProcess, launchedProcess.isRunning, status == "Connecting" else {
+                return
+            }
+            connected = true
+            status = "Connected"
+            if lastLogLine.isEmpty {
+                lastLogLine = "Client process is running."
+            }
         }
     }
 
