@@ -655,6 +655,7 @@ mod tests {
             layout_revision: 1,
             capabilities: vec![Capability::Clipboard],
             clipboard_protocol: Some(CLIPBOARD_PROTOCOL_VERSION),
+            portal_feedback_protocol: Some(deskbridge_core::PORTAL_FEEDBACK_PROTOCOL_VERSION),
         })
     }
 }

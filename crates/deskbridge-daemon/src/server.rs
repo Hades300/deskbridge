@@ -3,9 +3,9 @@ use anyhow::{Context, Result};
 use deskbridge_core::{
     CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
     DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello, InputEvent, InputPacket,
-    InputRouter, Layout, Message, PORTAL_FLASH_LOG_PREFIX, PortalFeedbackConfig, PortalFlashPacket,
-    PortalFlashRole, PortalTransition, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome,
-    read_frame, write_frame,
+    InputRouter, Layout, Message, PORTAL_FEEDBACK_PROTOCOL_VERSION, PORTAL_FLASH_LOG_PREFIX,
+    PortalFeedbackConfig, PortalFlashPacket, PortalFlashRole, PortalTransition,
+    REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome, read_frame, write_frame,
 };
 use std::{
     collections::HashMap,
@@ -640,6 +640,10 @@ async fn handle_client(
             .clipboard
             .enabled
             .then_some(CLIPBOARD_PROTOCOL_VERSION),
+        portal_feedback_protocol: options
+            .portal_feedback
+            .enabled
+            .then_some(PORTAL_FEEDBACK_PROTOCOL_VERSION),
     });
 
     if !hello.is_input_client() {
@@ -726,7 +730,9 @@ async fn handle_client(
     write_frame(&mut stream, &welcome).await?;
     let client_clipboard_supported = hello.capabilities.contains(&Capability::Clipboard)
         && hello.clipboard_protocol == Some(CLIPBOARD_PROTOCOL_VERSION);
-    let client_portal_feedback_supported = hello.capabilities.contains(&Capability::PortalFeedback);
+    let client_portal_feedback_supported = hello.portal_feedback_protocol
+        == Some(PORTAL_FEEDBACK_PROTOCOL_VERSION)
+        || hello.capabilities.contains(&Capability::PortalFeedback);
 
     let result = run_client_session(
         stream,
@@ -1163,9 +1169,6 @@ fn server_capabilities(options: &ServerOptions) -> Vec<Capability> {
     ];
     if options.clipboard.enabled {
         capabilities.push(Capability::Clipboard);
-    }
-    if options.portal_feedback.enabled {
-        capabilities.push(Capability::PortalFeedback);
     }
     capabilities
 }

@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CLIPBOARD_PROTOCOL_VERSION: u16 = 1;
+pub const PORTAL_FEEDBACK_PROTOCOL_VERSION: u16 = 1;
 pub const DEFAULT_HEARTBEAT_MS: u64 = 2_000;
 pub const REPLACED_SESSION_REASON: &str = "replaced by a newer session for the same screen";
 pub const PORTAL_FLASH_LOG_PREFIX: &str = "DESKBRIDGE_PORTAL_FLASH ";
@@ -52,6 +53,8 @@ pub struct Hello {
     pub build_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clipboard_protocol: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portal_feedback_protocol: Option<u16>,
 }
 
 impl Hello {
@@ -67,13 +70,13 @@ impl Hello {
                 Capability::Clipboard,
                 Capability::Diagnostics,
                 Capability::LayoutV1,
-                Capability::PortalFeedback,
             ],
             screen_size: None,
             app_version: None,
             platform: None,
             build_commit: None,
             clipboard_protocol: Some(CLIPBOARD_PROTOCOL_VERSION),
+            portal_feedback_protocol: Some(PORTAL_FEEDBACK_PROTOCOL_VERSION),
         }
     }
 
@@ -90,6 +93,7 @@ impl Hello {
             platform: None,
             build_commit: None,
             clipboard_protocol: None,
+            portal_feedback_protocol: None,
         }
     }
 
@@ -105,13 +109,13 @@ impl Hello {
                 Capability::Clipboard,
                 Capability::Diagnostics,
                 Capability::LayoutV1,
-                Capability::PortalFeedback,
             ],
             screen_size: None,
             app_version: None,
             platform: None,
             build_commit: None,
             clipboard_protocol: Some(CLIPBOARD_PROTOCOL_VERSION),
+            portal_feedback_protocol: Some(PORTAL_FEEDBACK_PROTOCOL_VERSION),
         }
     }
 
@@ -147,6 +151,8 @@ pub struct Welcome {
     pub capabilities: Vec<Capability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clipboard_protocol: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portal_feedback_protocol: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -432,6 +438,19 @@ mod tests {
     }
 
     #[test]
+    fn portal_feedback_negotiates_without_new_capability_enum() {
+        let hello = Hello::client("mac");
+        let encoded = serde_json::to_string(&hello).unwrap();
+        assert_eq!(
+            hello.portal_feedback_protocol,
+            Some(PORTAL_FEEDBACK_PROTOCOL_VERSION)
+        );
+        assert!(!hello.capabilities.contains(&Capability::PortalFeedback));
+        assert!(!encoded.contains("portal_feedback\""));
+        assert!(encoded.contains("portal_feedback_protocol"));
+    }
+
+    #[test]
     fn welcome_defaults_missing_capabilities_for_older_servers() {
         let json = r#"{
             "session_id":"00000000-0000-0000-0000-000000000001",
@@ -442,6 +461,7 @@ mod tests {
         let decoded: Welcome = serde_json::from_str(json).unwrap();
         assert!(decoded.capabilities.is_empty());
         assert_eq!(decoded.clipboard_protocol, None);
+        assert_eq!(decoded.portal_feedback_protocol, None);
     }
 
     #[test]
