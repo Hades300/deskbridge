@@ -219,50 +219,10 @@ struct DeskBridgeView: View {
                             .onChange(of: model.captureInput) { _, _ in model.save() }
                             .onChange(of: model.debugLogging) { _, _ in model.save() }
                         }
-
-                        GridRow {
-                            settingLabel("Portal", systemImage: "sparkle.magnifyingglass")
-                            portalFeedbackControls
-                        }
                     }
                 }
             }
         }
-    }
-
-    private var portalFeedbackControls: some View {
-        HStack(spacing: 14) {
-            Toggle("Glow feedback", isOn: $model.portalFeedbackEnabled)
-                .toggleStyle(.checkbox)
-
-            ForEach(model.portalFeedbackColors) { choice in
-                portalColorButton(choice)
-            }
-        }
-        .onChange(of: model.portalFeedbackEnabled) { _, _ in model.applyRuntimeInputSettings() }
-    }
-
-    private func portalColorButton(_ choice: PortalFeedbackColorChoice) -> some View {
-        let selected = model.portalFeedbackColor == choice.id
-
-        return Button {
-            model.portalFeedbackColor = choice.id
-            model.applyRuntimeInputSettings()
-        } label: {
-            Circle()
-                .fill(portalColor(choice.id))
-                .frame(width: 18, height: 18)
-                .overlay {
-                    Circle()
-                        .stroke(
-                            selected ? Color.primary.opacity(0.9) : DeskBridgeTheme.hairline,
-                            lineWidth: selected ? 2 : 1
-                        )
-                }
-                .shadow(color: portalColor(choice.id).opacity(0.55), radius: 7)
-        }
-        .buttonStyle(.plain)
-        .help(choice.name)
     }
 
     private var layoutEditor: some View {
@@ -299,7 +259,6 @@ struct DeskBridgeView: View {
                             title: model.screenName,
                             subtitle: "\(model.localRoleLabel) - \(Int(model.localDisplayWidth))x\(Int(model.localDisplayHeight))",
                             size: metrics.localSize,
-                            glowEdge: model.localGlowEdge,
                             isLocal: true
                         )
                         .position(
@@ -311,7 +270,6 @@ struct DeskBridgeView: View {
                             title: model.peerScreenName,
                             subtitle: "\(model.peerRoleLabel) - \(Int(model.peerDisplayWidth))x\(Int(model.peerDisplayHeight))",
                             size: metrics.peerSize,
-                            glowEdge: model.peerGlowEdge,
                             isLocal: false
                         )
                         .position(
@@ -351,7 +309,6 @@ struct DeskBridgeView: View {
         title: String,
         subtitle: String,
         size: CGSize,
-        glowEdge: LayoutPreviewEdge,
         isLocal: Bool
     ) -> some View {
         let tint = isLocal ? DeskBridgeTheme.localScreen : DeskBridgeTheme.peerScreen
@@ -362,8 +319,6 @@ struct DeskBridgeView: View {
                     RoundedRectangle(cornerRadius: 7)
                         .stroke(tint.opacity(0.58), lineWidth: 1)
                 )
-
-            glowStrip(edge: glowEdge)
 
             VStack(spacing: 4) {
                 Text(title)
@@ -378,71 +333,6 @@ struct DeskBridgeView: View {
         }
         .frame(width: size.width, height: size.height)
         .shadow(color: tint.opacity(0.16), radius: 12, y: 5)
-    }
-
-    @ViewBuilder
-    private func glowStrip(edge: LayoutPreviewEdge) -> some View {
-        let color = DeskBridgeTheme.portal
-        switch edge {
-        case .left:
-            HStack {
-                verticalPortalGlow(color: color, leading: true)
-                Spacer()
-            }
-        case .right:
-            HStack {
-                Spacer()
-                verticalPortalGlow(color: color, leading: false)
-            }
-        case .top:
-            VStack {
-                horizontalPortalGlow(color: color, top: true)
-                Spacer()
-            }
-        case .bottom:
-            VStack {
-                Spacer()
-                horizontalPortalGlow(color: color, top: false)
-            }
-        }
-    }
-
-    private func verticalPortalGlow(color: Color, leading: Bool) -> some View {
-        ZStack(alignment: leading ? .leading : .trailing) {
-            LinearGradient(
-                colors: leading
-                    ? [color.opacity(0.42), color.opacity(0.16), color.opacity(0)]
-                    : [color.opacity(0), color.opacity(0.16), color.opacity(0.42)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .blur(radius: 1.2)
-
-            RoundedRectangle(cornerRadius: 1.5)
-                .fill(color.opacity(0.45))
-                .frame(width: 2)
-                .shadow(color: color.opacity(0.35), radius: 5)
-        }
-        .frame(width: 8)
-    }
-
-    private func horizontalPortalGlow(color: Color, top: Bool) -> some View {
-        ZStack(alignment: top ? .top : .bottom) {
-            LinearGradient(
-                colors: top
-                    ? [color.opacity(0.42), color.opacity(0.16), color.opacity(0)]
-                    : [color.opacity(0), color.opacity(0.16), color.opacity(0.42)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .blur(radius: 1.2)
-
-            RoundedRectangle(cornerRadius: 1.5)
-                .fill(color.opacity(0.45))
-                .frame(height: 2)
-                .shadow(color: color.opacity(0.35), radius: 5)
-        }
-        .frame(height: 8)
     }
 
     private var statusPanel: some View {
@@ -545,23 +435,6 @@ struct DeskBridgeView: View {
             .textSelection(.enabled)
     }
 
-    private func portalColor(_ id: String) -> Color {
-        switch id {
-        case "aqua":
-            Color(red: 0.35, green: 0.88, blue: 1.00)
-        case "blue":
-            Color(red: 0.38, green: 0.55, blue: 1.00)
-        case "violet":
-            Color(red: 0.78, green: 0.48, blue: 1.00)
-        case "amber":
-            Color(red: 1.00, green: 0.70, blue: 0.25)
-        case "rose":
-            Color(red: 1.00, green: 0.42, blue: 0.56)
-        default:
-            DeskBridgeTheme.portal
-        }
-    }
-
     private func detailLabel(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 12, weight: .medium))
@@ -652,7 +525,6 @@ private enum DeskBridgeTheme {
     static let accent = Color(red: 0.80, green: 0.95, blue: 0.42)
     static let success = Color(red: 0.43, green: 0.84, blue: 0.47)
     static let warning = Color(red: 0.95, green: 0.65, blue: 0.35)
-    static let portal = Color(red: 0.70, green: 0.95, blue: 0.48)
     static let localScreen = Color(red: 0.50, green: 0.66, blue: 0.90)
     static let peerScreen = Color(red: 0.86, green: 0.58, blue: 0.72)
 

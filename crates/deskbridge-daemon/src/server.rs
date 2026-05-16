@@ -3,9 +3,8 @@ use anyhow::{Context, Result};
 use deskbridge_core::{
     CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
     DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello, InputEvent, InputPacket,
-    InputRouter, Layout, Message, PORTAL_FEEDBACK_PROTOCOL_VERSION, PORTAL_FLASH_LOG_PREFIX,
-    PortalFeedbackConfig, PortalFlashPacket, PortalFlashRole, PortalTransition,
-    REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome, read_frame, write_frame,
+    InputRouter, Layout, Message, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome,
+    read_frame, write_frame,
 };
 use std::{
     collections::HashMap,
@@ -41,7 +40,6 @@ pub struct ServerOptions {
     pub heartbeat_ms: u64,
     pub layout: Layout,
     pub clipboard: ClipboardConfig,
-    pub portal_feedback: PortalFeedbackConfig,
 }
 
 type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
@@ -61,20 +59,14 @@ struct RuntimeSettings {
     reverse_scroll: AtomicBool,
     layout_revision: AtomicU64,
     layout: StdMutex<Layout>,
-    portal_feedback: StdMutex<PortalFeedbackConfig>,
 }
 
 impl RuntimeSettings {
-    fn new(
-        reverse_scroll: bool,
-        layout: Layout,
-        portal_feedback: PortalFeedbackConfig,
-    ) -> ServerRuntimeSettings {
+    fn new(reverse_scroll: bool, layout: Layout) -> ServerRuntimeSettings {
         Arc::new(Self {
             reverse_scroll: AtomicBool::new(reverse_scroll),
             layout_revision: AtomicU64::new(1),
             layout: StdMutex::new(layout),
-            portal_feedback: StdMutex::new(portal_feedback),
         })
     }
 
@@ -104,19 +96,6 @@ impl RuntimeSettings {
     fn layout_revision(&self) -> u64 {
         self.layout_revision.load(Ordering::Relaxed)
     }
-
-    fn portal_feedback(&self) -> PortalFeedbackConfig {
-        self.portal_feedback.lock().unwrap().clone()
-    }
-
-    fn set_portal_feedback(&self, portal_feedback: PortalFeedbackConfig) -> bool {
-        let mut current = self.portal_feedback.lock().unwrap();
-        let changed = *current != portal_feedback;
-        if changed {
-            *current = portal_feedback;
-        }
-        changed
-    }
 }
 
 #[derive(Debug)]
@@ -144,13 +123,6 @@ struct RouteDebugEnvelope {
     request_id: Uuid,
     command: RouteDebugCommand,
     response_tx: oneshot::Sender<DebugResponse>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PortalFeedbackTargets<'a> {
-    server_name: &'a str,
-    client_name: &'a str,
-    client_supported: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -427,55 +399,11 @@ struct ClientSessionRuntime<'a> {
     capture_tx: crate::capture::CaptureSender,
     server_log: ServerDebugLog,
     client_clipboard_supported: bool,
-    client_portal_feedback_supported: bool,
 }
 
 #[derive(Debug, Default)]
 struct RoutedCapture {
     event: Option<InputEvent>,
-    portal: Option<PortalTransition>,
-}
-
-#[derive(Debug, Default)]
-struct PointerSpeedTracker {
-    last_move_at: Option<Instant>,
-    recent_speed_px_per_sec: u32,
-}
-
-impl PointerSpeedTracker {
-    fn observe(&mut self, event: &CaptureEvent) -> u32 {
-        let (dx, dy) = match event {
-            CaptureEvent::Input(InputEvent::MouseMove { dx, dy })
-            | CaptureEvent::ProbeInput {
-                event: InputEvent::MouseMove { dx, dy },
-                ..
-            } => (*dx, *dy),
-            _ => return self.recent_speed(),
-        };
-
-        let now = Instant::now();
-        let distance = ((dx as f64).hypot(dy as f64)).round();
-        let speed = match self.last_move_at.replace(now) {
-            Some(previous) => {
-                let elapsed = now.duration_since(previous).as_secs_f64().max(0.001);
-                (distance / elapsed).round() as u32
-            }
-            None => (distance * 60.0).round() as u32,
-        };
-        self.recent_speed_px_per_sec = speed;
-        speed
-    }
-
-    fn recent_speed(&self) -> u32 {
-        if self
-            .last_move_at
-            .is_some_and(|at| at.elapsed() <= Duration::from_millis(350))
-        {
-            self.recent_speed_px_per_sec
-        } else {
-            0
-        }
-    }
 }
 
 fn new_server_debug_log() -> ServerDebugLog {
@@ -512,11 +440,7 @@ pub async fn run(options: ServerOptions) -> Result<()> {
     let (capture_tx, _) = crate::capture::channel();
     let sessions = SessionRegistry::default();
     let server_log = new_server_debug_log();
-    let runtime_settings = RuntimeSettings::new(
-        options.reverse_scroll,
-        options.layout.clone(),
-        options.portal_feedback.clone(),
-    );
+    let runtime_settings = RuntimeSettings::new(options.reverse_scroll, options.layout.clone());
 
     if options.capture {
         start_platform_capture(capture_tx.clone())?;
@@ -717,10 +641,6 @@ async fn handle_client(
             .clipboard
             .enabled
             .then_some(CLIPBOARD_PROTOCOL_VERSION),
-        portal_feedback_protocol: options
-            .portal_feedback
-            .enabled
-            .then_some(PORTAL_FEEDBACK_PROTOCOL_VERSION),
     });
 
     if !hello.is_input_client() {
@@ -807,9 +727,6 @@ async fn handle_client(
     write_frame(&mut stream, &welcome).await?;
     let client_clipboard_supported = hello.capabilities.contains(&Capability::Clipboard)
         && hello.clipboard_protocol == Some(CLIPBOARD_PROTOCOL_VERSION);
-    let client_portal_feedback_supported = hello.portal_feedback_protocol
-        == Some(PORTAL_FEEDBACK_PROTOCOL_VERSION)
-        || hello.capabilities.contains(&Capability::PortalFeedback);
 
     let result = run_client_session(
         stream,
@@ -825,7 +742,6 @@ async fn handle_client(
             capture_tx,
             server_log: server_log.clone(),
             client_clipboard_supported,
-            client_portal_feedback_supported,
         },
     )
     .await;
@@ -863,7 +779,6 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
         capture_tx,
         server_log,
         client_clipboard_supported,
-        client_portal_feedback_supported,
     } = runtime;
     let mut ticker = time::interval(Duration::from_secs(5));
     let (reader, mut writer) = stream.into_split();
@@ -876,7 +791,6 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
         &options.name,
         client_name,
     );
-    let mut portal_feedback = runtime_settings.portal_feedback();
     let mut demo_router = InputRouter::new(route_layout.clone(), options.name.clone()).ok();
     let mut capture_rx = capture_tx.subscribe();
     let mut pending_debug = HashMap::<Uuid, oneshot::Sender<DebugResponse>>::new();
@@ -886,8 +800,6 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut capture_probe_seq_index = HashMap::<u64, Uuid>::new();
     let mut perf = ServerPerfMetrics::new();
     let mut last_unrouted_capture_log_ms = 0_u128;
-    let mut pointer_speed = PointerSpeedTracker::default();
-    let mut portal_seq = 0_u64;
     let mut clipboard_options = options.clipboard.clone();
     if !client_clipboard_supported {
         clipboard_options.enabled = false;
@@ -924,8 +836,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     };
                     let probe_id = capture_probe_id(&event);
                     let capture_event = capture_event_payload(event);
-                    let capture_speed_px_per_sec = pointer_speed.observe(&capture_event);
-                    let routed = route_capture_event_with_portal(
+                    let routed = route_capture_event_for_client(
                         &mut demo_router,
                         capture_event,
                         client_name,
@@ -979,24 +890,6 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                                 client_name
                             )),
                         }
-                    }
-
-                    if probe_id.is_none()
-                        && let Some(portal) = routed.portal.as_ref()
-                    {
-                        emit_portal_feedback(
-                            &mut writer,
-                            &mut portal_seq,
-                            portal,
-                            &portal_feedback,
-                            PortalFeedbackTargets {
-                                server_name: &options.name,
-                                client_name,
-                                client_supported: client_portal_feedback_supported,
-                            },
-                            capture_speed_px_per_sec,
-                        )
-                        .await?;
                     }
 
                     if let Some(event) = routed.event {
@@ -1065,7 +958,6 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                                 &demo_router,
                                 route_debug.request_id,
                                 &route_layout,
-                                &portal_feedback,
                             ),
                         });
                         continue;
@@ -1173,7 +1065,6 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             &options.name,
                             client_name,
                         );
-                        portal_feedback = runtime_settings.portal_feedback();
                         if reset_route || demo_router.is_none() {
                             demo_router = InputRouter::new(route_layout.clone(), options.name.clone()).ok();
                             crate::capture::set_local_input_suppressed(false);
@@ -1194,10 +1085,6 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             logs: vec![
                                 format!("session route reset={reset_route} active_screen={active_screen}"),
                                 format!("layout_revision={}", runtime_settings.layout_revision()),
-                                format!(
-                                    "portal_feedback enabled={} color={}",
-                                    portal_feedback.enabled, portal_feedback.color
-                                ),
                             ],
                         });
                     }
@@ -1400,23 +1287,17 @@ async fn handle_diagnostic_session(
             DebugCommand::InputSettings {
                 reverse_scroll,
                 layout,
-                portal_feedback,
                 reset_route,
             } => {
                 let mut response = update_runtime_input_settings(
                     request.request_id,
                     reverse_scroll,
                     layout.clone(),
-                    portal_feedback.clone(),
                     &runtime_settings,
                     &server_log,
                 );
 
-                if response.ok
-                    && (layout.is_some()
-                        || portal_feedback.is_some()
-                        || reset_route.unwrap_or(false))
-                {
+                if response.ok && (layout.is_some() || reset_route.unwrap_or(false)) {
                     let command = RouteDebugCommand::ApplySettings {
                         reset_route: reset_route.unwrap_or(false) || layout.is_some(),
                     };
@@ -1482,78 +1363,6 @@ where
     Ok(())
 }
 
-async fn emit_portal_feedback<W>(
-    writer: &mut W,
-    portal_seq: &mut u64,
-    transition: &PortalTransition,
-    config: &PortalFeedbackConfig,
-    targets: PortalFeedbackTargets<'_>,
-    speed_px_per_sec: u32,
-) -> Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    if !config.enabled {
-        return Ok(());
-    }
-
-    let duration_ms = portal_duration_ms(config, speed_px_per_sec);
-    let color = config.color.clone();
-    let packets = [
-        PortalFlashPacket {
-            seq: next_portal_seq(portal_seq),
-            screen: transition.source_screen.clone(),
-            role: PortalFlashRole::Exit,
-            edge: transition.source_edge,
-            x: transition.source_x,
-            y: transition.source_y,
-            color: color.clone(),
-            duration_ms,
-            speed_px_per_sec,
-        },
-        PortalFlashPacket {
-            seq: next_portal_seq(portal_seq),
-            screen: transition.target_screen.clone(),
-            role: PortalFlashRole::Entry,
-            edge: transition.target_edge,
-            x: transition.target_x,
-            y: transition.target_y,
-            color,
-            duration_ms,
-            speed_px_per_sec,
-        },
-    ];
-
-    for packet in packets {
-        if packet.screen == targets.server_name {
-            emit_portal_flash_log(&packet);
-        } else if packet.screen == targets.client_name && targets.client_supported {
-            write_frame(writer, &Message::PortalFlash(packet)).await?;
-        }
-    }
-
-    Ok(())
-}
-
-fn next_portal_seq(portal_seq: &mut u64) -> u64 {
-    *portal_seq = portal_seq.saturating_add(1);
-    *portal_seq
-}
-
-fn portal_duration_ms(config: &PortalFeedbackConfig, speed_px_per_sec: u32) -> u32 {
-    let min_ms = config.min_ms.min(config.max_ms);
-    let max_ms = config.max_ms.max(config.min_ms);
-    let span = max_ms.saturating_sub(min_ms);
-    let normalized_speed = speed_px_per_sec.min(3_200) as f64 / 3_200.0;
-    min_ms + (normalized_speed.sqrt() * span as f64).round() as u32
-}
-
-fn emit_portal_flash_log(packet: &PortalFlashPacket) {
-    if let Ok(json) = serde_json::to_string(packet) {
-        println!("{PORTAL_FLASH_LOG_PREFIX}{json}");
-    }
-}
-
 fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -1611,15 +1420,7 @@ async fn build_server_logs_response(
         options.clipboard.poll_ms,
         options.clipboard.max_transfer_bytes
     ));
-    let portal_feedback = runtime_settings.portal_feedback();
     let layout = runtime_settings.layout();
-    logs.push(format!(
-        "portal_feedback enabled={} color={} min_ms={} max_ms={}",
-        portal_feedback.enabled,
-        portal_feedback.color,
-        portal_feedback.min_ms,
-        portal_feedback.max_ms
-    ));
     logs.push(format!(
         "layout_revision={} screens={} links={}",
         runtime_settings.layout_revision(),
@@ -1668,7 +1469,6 @@ fn update_runtime_input_settings(
     request_id: Uuid,
     reverse_scroll: Option<bool>,
     layout: Option<Layout>,
-    portal_feedback: Option<PortalFeedbackConfig>,
     runtime_settings: &ServerRuntimeSettings,
     server_log: &ServerDebugLog,
 ) -> DebugResponse {
@@ -1708,26 +1508,6 @@ fn update_runtime_input_settings(
                 logs.push(format!("layout update failed: {err}"));
             }
         }
-    }
-
-    if let Some(portal_feedback) = portal_feedback {
-        let portal_changed = runtime_settings.set_portal_feedback(portal_feedback.clone());
-        changed |= portal_changed;
-        logs.push(format!(
-            "portal_feedback: changed={} enabled={} color={} min_ms={} max_ms={}",
-            portal_changed,
-            portal_feedback.enabled,
-            portal_feedback.color,
-            portal_feedback.min_ms,
-            portal_feedback.max_ms
-        ));
-        push_server_log(
-            server_log,
-            format!(
-                "runtime portal feedback updated changed={} enabled={} color={}",
-                portal_changed, portal_feedback.enabled, portal_feedback.color
-            ),
-        );
     }
 
     logs.push(format!(
@@ -2020,7 +1800,6 @@ fn build_route_status_logs(
     router: &Option<InputRouter>,
     request_id: Uuid,
     layout: &Layout,
-    portal_feedback: &PortalFeedbackConfig,
 ) -> Vec<String> {
     let mut logs = vec![
         format!(
@@ -2028,14 +1807,12 @@ fn build_route_status_logs(
             options.name
         ),
         format!(
-            "listen={} capture={} demo_events={} reverse_scroll={} heartbeat_ms={} portal_feedback={} color={}",
+            "listen={} capture={} demo_events={} reverse_scroll={} heartbeat_ms={}",
             options.listen,
             options.capture,
             options.demo_events,
             runtime_settings.reverse_scroll(),
             options.heartbeat_ms,
-            portal_feedback.enabled,
-            portal_feedback.color
         ),
         format!("layout_revision={}", runtime_settings.layout_revision()),
         format!(
@@ -2285,10 +2062,10 @@ fn route_capture_event(
     event: CaptureEvent,
     client_name: &str,
 ) -> Option<InputEvent> {
-    route_capture_event_with_portal(router, event, client_name).event
+    route_capture_event_for_client(router, event, client_name).event
 }
 
-fn route_capture_event_with_portal(
+fn route_capture_event_for_client(
     router: &mut Option<InputRouter>,
     event: CaptureEvent,
     client_name: &str,
@@ -2327,11 +2104,8 @@ fn route_capture_event_with_portal(
     let event = outcome
         .input
         .and_then(|routed| (routed.target_screen == client_name).then_some(routed.event));
-    let portal = outcome.portal.filter(|portal| {
-        portal.source_screen == client_name || portal.target_screen == client_name
-    });
 
-    RoutedCapture { event, portal }
+    RoutedCapture { event }
 }
 
 fn transform_routed_input_event(mut event: InputEvent, reverse_scroll: bool) -> InputEvent {
@@ -2511,16 +2285,11 @@ mod tests {
                 enabled: false,
                 ..ClipboardConfig::default()
             },
-            portal_feedback: PortalFeedbackConfig::default(),
         }
     }
 
     fn test_runtime_settings(options: &ServerOptions) -> ServerRuntimeSettings {
-        RuntimeSettings::new(
-            options.reverse_scroll,
-            options.layout.clone(),
-            options.portal_feedback.clone(),
-        )
+        RuntimeSettings::new(options.reverse_scroll, options.layout.clone())
     }
 
     fn test_shared(
@@ -3182,7 +2951,6 @@ mod tests {
                 command: DebugCommand::InputSettings {
                     reverse_scroll: Some(true),
                     layout: None,
-                    portal_feedback: None,
                     reset_route: None,
                 },
             }),

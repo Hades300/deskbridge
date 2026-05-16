@@ -83,10 +83,12 @@
                     BorderBrush="{TemplateBinding BorderBrush}"
                     BorderThickness="{TemplateBinding BorderThickness}"
                     CornerRadius="7">
-              <ContentPresenter HorizontalAlignment="Center"
-                                VerticalAlignment="Center"
-                                Margin="{TemplateBinding Padding}"
-                                TextElement.Foreground="{TemplateBinding Foreground}"/>
+              <TextBlock Text="{TemplateBinding Content}"
+                         Foreground="{TemplateBinding Foreground}"
+                         FontWeight="SemiBold"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center"
+                         Margin="{TemplateBinding Padding}"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
@@ -174,39 +176,6 @@
                 <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceRaisedBrush}"/>
                 <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource BorderBrushStrong}"/>
                 <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <Style x:Key="ColorSwatchRadioButton" TargetType="RadioButton">
-      <Setter Property="Width" Value="24"/>
-      <Setter Property="Height" Value="24"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="Ring"
-                    Background="Transparent"
-                    BorderBrush="Transparent"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="3">
-              <Ellipse x:Name="Swatch" Fill="{TemplateBinding Background}">
-                <Ellipse.Effect>
-                  <DropShadowEffect Color="#CDEA69" ShadowDepth="0" BlurRadius="7" Opacity="0.20"/>
-                </Ellipse.Effect>
-              </Ellipse>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Ring" Property="BorderBrush" Value="{StaticResource BorderBrushStrong}"/>
-              </Trigger>
-              <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Ring" Property="BorderBrush" Value="{StaticResource TextBrush}"/>
-                <Setter TargetName="Ring" Property="BorderThickness" Value="2"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>

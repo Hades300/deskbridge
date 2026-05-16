@@ -3,8 +3,7 @@ use anyhow::{Context, Result, anyhow};
 use deskbridge_core::{
     CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
     DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, EventAck, FrameError, Hello,
-    InputEvent, InputPacket, Message, PORTAL_FLASH_LOG_PREFIX, Ping, Pong, PortalFlashPacket,
-    REPLACED_SESSION_REASON, read_frame, write_frame,
+    InputEvent, InputPacket, Message, Ping, Pong, REPLACED_SESSION_REASON, read_frame, write_frame,
 };
 use std::collections::VecDeque;
 use std::{
@@ -201,18 +200,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                             }
                         }
                     }
-                    Message::PortalFlash(packet) => {
-                        emit_portal_flash_log(&packet);
-                        debug_state.push(format!(
-                            "portal flash role={:?} edge={:?} point={},{} duration_ms={} speed_px_per_sec={}",
-                            packet.role,
-                            packet.edge,
-                            packet.x,
-                            packet.y,
-                            packet.duration_ms,
-                            packet.speed_px_per_sec
-                        ));
-                    }
+                    Message::PortalFlash(_) => {}
                     Message::DebugRequest(request) => {
                         let response = handle_debug_request(request, sink.as_mut(), &mut debug_state).await;
                         write_frame(&mut writer, &Message::DebugResponse(response)).await?;
@@ -246,12 +234,6 @@ fn reverse_scroll_event(event: &mut InputEvent) {
     if let InputEvent::Wheel { dx, dy } = event {
         *dx = dx.saturating_neg();
         *dy = dy.saturating_neg();
-    }
-}
-
-fn emit_portal_flash_log(packet: &PortalFlashPacket) {
-    if let Ok(json) = serde_json::to_string(packet) {
-        println!("{PORTAL_FLASH_LOG_PREFIX}{json}");
     }
 }
 
@@ -655,7 +637,6 @@ mod tests {
             layout_revision: 1,
             capabilities: vec![Capability::Clipboard],
             clipboard_protocol: Some(CLIPBOARD_PROTOCOL_VERSION),
-            portal_feedback_protocol: Some(deskbridge_core::PORTAL_FEEDBACK_PROTOCOL_VERSION),
         })
     }
 }

@@ -6,13 +6,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var window: NSWindow?
     private let model = DeskBridgeModel()
-    private let portalOverlay = PortalFlashOverlayController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        model.onPortalFlash = { [weak self] event in
-            self?.portalOverlay.show(event)
-        }
         installStatusItem()
         showWindow()
     }
