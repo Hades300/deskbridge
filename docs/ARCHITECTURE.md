@@ -72,7 +72,7 @@ The server separates capture from transport:
 3. When the pointer hits a linked edge, the active screen switches to the target client.
 4. While a client screen is active, keyboard, mouse button, wheel, and movement events are sent as protocol `input` packets.
 
-On Windows, `deskbridge server --capture` installs low-level mouse and keyboard hooks. On non-Windows hosts, capture is rejected explicitly; `--demo-events` remains the portable loopback verifier.
+On Windows, `deskbridge server --capture` installs low-level mouse and keyboard hooks. On macOS, it installs a listen-only CoreGraphics event tap and requires Accessibility plus Input Monitoring permissions. `--demo-events` remains the portable loopback verifier when platform capture is not available.
 
 ## Clean-Room Note
 

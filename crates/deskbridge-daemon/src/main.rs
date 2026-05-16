@@ -106,6 +106,8 @@ enum Command {
         dx: i32,
         #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
         dy: i32,
+        #[arg(long, default_value_t = false)]
+        evented_rel: bool,
     },
     /// Create a default JSON config file.
     InitConfig {
@@ -280,8 +282,14 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::InjectTest { x, y, dx, dy } => {
-            run_inject_test(x, y, dx, dy).await?;
+        Command::InjectTest {
+            x,
+            y,
+            dx,
+            dy,
+            evented_rel,
+        } => {
+            run_inject_test(x, y, dx, dy, evented_rel).await?;
             Ok(())
         }
         Command::InitConfig { path } => {
@@ -392,7 +400,13 @@ fn simulation_edge_point(layout: &Layout, screen_name: &str, edge: Edge) -> Resu
     })
 }
 
-async fn run_inject_test(x: Option<i32>, y: Option<i32>, dx: i32, dy: i32) -> Result<()> {
+async fn run_inject_test(
+    x: Option<i32>,
+    y: Option<i32>,
+    dx: i32,
+    dy: i32,
+    evented_rel: bool,
+) -> Result<()> {
     let before = input::display_info()?;
     let mut sink = input::EnigoSink::new()?;
 
@@ -417,11 +431,15 @@ async fn run_inject_test(x: Option<i32>, y: Option<i32>, dx: i32, dy: i32) -> Re
     }
 
     if dx != 0 || dy != 0 {
-        sink.apply(&InputPacket {
-            seq: 2,
-            event: InputEvent::MouseMove { dx, dy },
-        })
-        .await?;
+        if evented_rel {
+            sink.move_mouse_rel_evented_for_diagnostics(dx, dy)?;
+        } else {
+            sink.apply(&InputPacket {
+                seq: 2,
+                event: InputEvent::MouseMove { dx, dy },
+            })
+            .await?;
+        }
     }
 
     tokio::time::sleep(Duration::from_millis(100)).await;

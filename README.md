@@ -22,7 +22,7 @@ Implemented:
 - macOS native Swift status bar/config app built with SwiftPM.
 - macOS app supervision for reconnect/restart behavior when the daemon exits.
 - Windows WPF admin panel scaffold for server configuration and `--capture` launch.
-- macOS input injection backend through `enigo`.
+- macOS input injection backend through `enigo` plus bounded CoreGraphics pointer warping.
 
 Not complete beyond the MVP:
 
@@ -117,9 +117,10 @@ Test local macOS injection without Windows:
 
 ```bash
 deskbridge inject-test --x 1 --y 559 --dx 80 --dy -2
+deskbridge inject-test --x 1 --y 559 --dx -500 --dy 0
 ```
 
-This moves the local pointer through the same input path used by the DeskBridge client and prints the pointer location before and after injection.
+This moves the local pointer through the same input path used by the DeskBridge client and prints the pointer location before and after injection. On macOS, the injected pointer is clamped to the main display bounds so remote relative movement cannot push the cursor into invisible negative coordinates.
 
 Test the capture-to-protocol path on macOS without Windows by running a macOS server with `--capture` and a dry-run client:
 
@@ -129,6 +130,13 @@ deskbridge client --server 127.0.0.1:24903 --name mac --dry-run
 ```
 
 Move the server pointer across the configured edge. The client log should show `MouseAbs` followed by relative `MouseMove` events.
+For a same-Mac automated capture smoke test, move to the edge and send a diagnostic evented relative move:
+
+```bash
+deskbridge inject-test --x 1727 --y 559 --dx 80 --dy 0 --evented-rel
+```
+
+`--evented-rel` is only for validating the macOS capture hook; normal client injection uses the bounded path above.
 
 Use `--dry-run` on the client to validate the protocol without injecting input.
 
