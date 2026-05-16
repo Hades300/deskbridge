@@ -59,6 +59,7 @@ GitHub Actions creates release packages when a `v*` tag is pushed, or when the `
 The macOS app is ad-hoc signed for preview builds. The Windows packages include `deskbridge.exe` and the WPF admin app.
 
 On Windows, open `DeskBridge.Admin.exe`. `deskbridge.exe` is the command-line daemon used by the admin app.
+DeskBridge is not wire-compatible with Input Leap, Barrier, or Synergy clients; use the DeskBridge app/daemon on both sides.
 
 macOS shell:
 

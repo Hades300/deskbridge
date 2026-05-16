@@ -1,8 +1,8 @@
 use crate::capture::CaptureEvent;
 use anyhow::{Context, Result};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, Edge, Hello, InputEvent, InputPacket, InputRouter, Layout, Message,
-    Status, StatusKind, Welcome, read_frame, write_frame,
+    DEFAULT_HEARTBEAT_MS, Edge, FrameError, Hello, InputEvent, InputPacket, InputRouter, Layout,
+    Message, Status, StatusKind, Welcome, read_frame, write_frame,
 };
 use std::{collections::HashSet, net::SocketAddr, time::Duration};
 use tokio::{net::TcpListener, net::TcpStream, time};
@@ -58,9 +58,9 @@ async fn handle_client(
     capture_tx: crate::capture::CaptureSender,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
-    let hello = match read_frame(&mut stream).await? {
-        Message::Hello(hello) => hello,
-        other => {
+    let hello = match read_frame(&mut stream).await {
+        Ok(Message::Hello(hello)) => hello,
+        Ok(other) => {
             write_frame(
                 &mut stream,
                 &Message::Status(Status {
@@ -71,6 +71,15 @@ async fn handle_client(
             .await?;
             return Ok(());
         }
+        Err(FrameError::ForeignProtocol { magic }) => {
+            warn!(
+                peer = %peer,
+                magic,
+                "non-DeskBridge client connected; this is usually an old Input Leap, Barrier, or Synergy client pointed at the DeskBridge port"
+            );
+            return Ok(());
+        }
+        Err(err) => return Err(err.into()),
     };
 
     validate_client(&hello, &allow, &mut stream).await?;

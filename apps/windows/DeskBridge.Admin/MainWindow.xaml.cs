@@ -14,7 +14,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        DataContext = new MainWindowModel();
+        var model = new MainWindowModel();
+        DataContext = model;
+        Closed += (_, _) => model.Shutdown();
     }
 }
 
@@ -98,6 +100,11 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     public ICommand DiagnoseCommand => new RelayCommand(Diagnose);
     public ICommand FirewallCommand => new RelayCommand(OpenFirewall);
 
+    public void Shutdown()
+    {
+        Stop();
+    }
+
     private void Start()
     {
         Stop();
@@ -137,6 +144,10 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
+                if (ReferenceEquals(_serverProcess, process))
+                {
+                    _serverProcess = null;
+                }
                 StatusText = "Stopped";
                 StatusBrush = Brushes.Orange;
             });
@@ -165,7 +176,15 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     {
         if (_serverProcess is { HasExited: false })
         {
-            _serverProcess.Kill(entireProcessTree: true);
+            try
+            {
+                _serverProcess.Kill(entireProcessTree: true);
+                _serverProcess.WaitForExit(2000);
+            }
+            catch (Exception ex)
+            {
+                Diagnostics = ex.ToString();
+            }
         }
         _serverProcess = null;
         StatusText = "Stopped";
@@ -185,7 +204,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         var config = new
         {
             server = new { name = ServerName, listen = ListenAddress },
-            client = new { name = AllowedClient, server_addr = "192.168.2.5:24800" },
+            client = new { name = AllowedClient, server_addr = $"192.168.2.5:{ListenPort()}" },
             layout = new
             {
                 screens = new object[]
@@ -211,31 +230,78 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
     private void Diagnose()
     {
+        var port = ListenPort();
         Diagnostics =
-            $"Status: {StatusText}\nServer: {ListenAddress}\nAllowed client: {AllowedClient}\nPosition: {ClientPosition}\n" +
-            $"Daemon: {LocateDaemon()}\n\n" +
+            $"Status: {StatusText}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nAllowed client: {AllowedClient}\nPosition: {ClientPosition}\n" +
+            $"Daemon: {LocateDaemon()}\nDeskBridge processes:\n{DescribeDeskBridgeProcesses()}\n\n" +
             "From the Mac, run:\n" +
-            "deskbridge diag --server <WINDOWS_LAN_IP>:24800 --name mac\n\n" +
+            $"deskbridge diag --server <WINDOWS_LAN_IP>:{port} --name mac\n\n" +
             "On Windows, verify the listener with:\n" +
-            "Get-NetTCPConnection -LocalPort 24800 -State Listen";
+            $"Get-NetTCPConnection -LocalPort {port} -State Listen\n\n" +
+            "If logs show IHEL from 127.0.0.1, find the local process connecting to this port with:\n" +
+            $"Get-NetTCPConnection -RemotePort {port} -State Established | Select-Object LocalAddress,LocalPort,OwningProcess";
     }
 
     private void OpenFirewall()
     {
         Diagnostics =
             "PowerShell firewall rule:\n" +
-            "New-NetFirewallRule -DisplayName \"DeskBridge TCP 24800\" -Direction Inbound -Protocol TCP -LocalPort 24800 -Action Allow";
+            $"New-NetFirewallRule -DisplayName \"DeskBridge TCP {ListenPort()}\" -Direction Inbound -Protocol TCP -LocalPort {ListenPort()} -Action Allow";
     }
 
     private void Append(string? line)
     {
         if (string.IsNullOrWhiteSpace(line)) return;
-        Application.Current.Dispatcher.Invoke(() => Diagnostics += $"\n{line}");
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            var next = $"{Diagnostics}\n{line}";
+            Diagnostics = next.Length > 20_000 ? next[^20_000..] : next;
+        });
     }
 
     private static string LocateDaemon()
     {
         return Path.Combine(AppContext.BaseDirectory, "deskbridge.exe");
+    }
+
+    private string ListenPort()
+    {
+        var lastColon = ListenAddress.LastIndexOf(':');
+        if (lastColon >= 0 && lastColon < ListenAddress.Length - 1)
+        {
+            return ListenAddress[(lastColon + 1)..];
+        }
+
+        return "24800";
+    }
+
+    private string DescribeTrackedDaemon()
+    {
+        return _serverProcess switch
+        {
+            null => "not tracked by this window",
+            { HasExited: false } process => $"running, pid {process.Id}",
+            { HasExited: true } process => $"exited, code {process.ExitCode}",
+        };
+    }
+
+    private static string DescribeDeskBridgeProcesses()
+    {
+        var descriptions = Process.GetProcessesByName("deskbridge")
+            .Select(process =>
+            {
+                try
+                {
+                    return $"pid {process.Id}: {process.MainModule?.FileName ?? process.ProcessName}";
+                }
+                catch
+                {
+                    return $"pid {process.Id}: {process.ProcessName}";
+                }
+            })
+            .ToArray();
+
+        return descriptions.Length == 0 ? "none found" : string.Join("\n", descriptions);
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)

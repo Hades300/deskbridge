@@ -45,6 +45,11 @@ Protocol diagnostic:
 deskbridge.exe diag --server 127.0.0.1:24800 --name mac
 ```
 
+DeskBridge is not wire-compatible with Input Leap, Barrier, or Synergy. If the
+server log shows `IHEL`, an old client from one of those tools is still trying to
+connect to the DeskBridge port. Stop that client, or use the DeskBridge macOS app
+and daemon on the Mac side.
+
 ## Firewall
 
 Development firewall rule:
