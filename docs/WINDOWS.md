@@ -28,6 +28,8 @@ The next implementation step is to replace the process runner with a proper Wind
 
 ## Development Commands
 
+For release zips, start with `DeskBridge.Admin.exe`. Do not double-click `deskbridge.exe` unless you intentionally want the command-line daemon; without arguments it prints help and exits.
+
 Server from config:
 
 ```powershell

@@ -103,14 +103,27 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         Stop();
         SaveConfig();
 
+        var daemonPath = LocateDaemon();
+        if (!File.Exists(daemonPath))
+        {
+            StatusText = "Daemon missing";
+            StatusBrush = Brushes.Red;
+            Diagnostics =
+                "Could not find deskbridge.exe next to the admin app.\n" +
+                $"Expected: {daemonPath}\n\n" +
+                "Use the Windows release zip as-is, or place deskbridge.exe in the same folder as DeskBridge.Admin.exe.";
+            return;
+        }
+
         var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = "deskbridge.exe",
+                FileName = daemonPath,
                 Arguments = CaptureInput
                     ? $"server --config \"{ConfigPath}\" --capture"
                     : $"server --config \"{ConfigPath}\"",
+                WorkingDirectory = AppContext.BaseDirectory,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -129,12 +142,23 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             });
         };
 
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        _serverProcess = process;
-        StatusText = "Running";
-        StatusBrush = Brushes.Green;
+        try
+        {
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            _serverProcess = process;
+            StatusText = $"Running on {ListenAddress}";
+            StatusBrush = Brushes.Green;
+            Diagnostics =
+                $"Started DeskBridge server.\nListen: {ListenAddress}\nScreen: {ServerName}\nAllowed client: {AllowedClient}\nDaemon: {daemonPath}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = "Start failed";
+            StatusBrush = Brushes.Red;
+            Diagnostics = ex.ToString();
+        }
     }
 
     private void Stop()
@@ -188,8 +212,12 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private void Diagnose()
     {
         Diagnostics =
-            $"Server: {ListenAddress}\nAllowed client: {AllowedClient}\nPosition: {ClientPosition}\n" +
-            "Run `deskbridge diag --server 127.0.0.1:24800 --name mac` from another machine to verify protocol reachability.";
+            $"Status: {StatusText}\nServer: {ListenAddress}\nAllowed client: {AllowedClient}\nPosition: {ClientPosition}\n" +
+            $"Daemon: {LocateDaemon()}\n\n" +
+            "From the Mac, run:\n" +
+            "deskbridge diag --server <WINDOWS_LAN_IP>:24800 --name mac\n\n" +
+            "On Windows, verify the listener with:\n" +
+            "Get-NetTCPConnection -LocalPort 24800 -State Listen";
     }
 
     private void OpenFirewall()
@@ -203,6 +231,11 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     {
         if (string.IsNullOrWhiteSpace(line)) return;
         Application.Current.Dispatcher.Invoke(() => Diagnostics += $"\n{line}");
+    }
+
+    private static string LocateDaemon()
+    {
+        return Path.Combine(AppContext.BaseDirectory, "deskbridge.exe");
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
@@ -221,7 +254,12 @@ public sealed class MainWindowModel : INotifyPropertyChanged
 
 public sealed class RelayCommand(Action execute) : ICommand
 {
-    public event EventHandler? CanExecuteChanged;
+    public event EventHandler? CanExecuteChanged
+    {
+        add { }
+        remove { }
+    }
+
     public bool CanExecute(object? parameter) => true;
     public void Execute(object? parameter) => execute();
 }

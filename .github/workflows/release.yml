@@ -72,7 +72,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target.rust }} -p deskbridge
 
       - name: Publish admin app
-        run: dotnet publish apps/windows/DeskBridge.Admin/DeskBridge.Admin.csproj --configuration Release --runtime ${{ matrix.target.dotnet }} --self-contained false --output package/admin
+        run: dotnet publish apps/windows/DeskBridge.Admin/DeskBridge.Admin.csproj --configuration Release --runtime ${{ matrix.target.dotnet }} --self-contained false --output package
 
       - name: Assemble package
         shell: pwsh
@@ -81,6 +81,22 @@ jobs:
           Copy-Item "target/${{ matrix.target.rust }}/release/deskbridge.exe" package/deskbridge.exe
           Copy-Item README.md package/README.md
           Copy-Item LICENSE package/LICENSE
+          @"
+          DeskBridge for Windows
+          ======================
+
+          Start here:
+            1. Double-click DeskBridge.Admin.exe.
+            2. Confirm Listen is 0.0.0.0:24800.
+            3. Click Start Server.
+            4. If Windows asks for firewall access, allow Private networks.
+
+          Do not double-click deskbridge.exe unless you want the command-line daemon.
+          The admin app starts it for you and shows server status.
+
+          From the Mac, connect to:
+            <WINDOWS_LAN_IP>:24800
+          "@ | Set-Content package/README-WINDOWS.txt
           Compress-Archive -Path package/* -DestinationPath "DeskBridge-windows-${{ matrix.target.name }}.zip" -Force
 
       - name: Upload assets
