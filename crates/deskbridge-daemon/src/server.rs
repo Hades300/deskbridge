@@ -383,7 +383,7 @@ fn route_capture_event(
             }
             routed
         }
-        CaptureEvent::Input(event) => router.as_ref()?.route_if_remote_active(event)?,
+        CaptureEvent::Input(event) => router.as_mut()?.route_if_remote_active(event)?,
     };
     (routed.target_screen == client_name).then_some(routed.event)
 }

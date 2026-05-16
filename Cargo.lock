@@ -195,6 +195,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "core-graphics",
  "deskbridge-core",
  "enigo",
  "serde",

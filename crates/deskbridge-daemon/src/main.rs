@@ -5,13 +5,14 @@ mod input;
 mod permissions;
 mod server;
 
+use crate::input::InputSink;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use deskbridge_core::{
-    DEFAULT_HEARTBEAT_MS, DeskBridgeConfig, Edge, InputEvent, Layout, Link, Screen, Size,
-    simulate_route,
+    DEFAULT_HEARTBEAT_MS, DeskBridgeConfig, Edge, InputEvent, InputPacket, InputRouter, Layout,
+    Link, Screen, Size, simulate_route,
 };
-use std::{net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -81,6 +82,12 @@ enum Command {
         dx: i32,
         #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
         dy: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        return_dx: Option<i32>,
+        #[arg(long, allow_hyphen_values = true)]
+        return_dy: Option<i32>,
+        #[arg(long, default_value_t = 3)]
+        return_steps: usize,
     },
     /// Check platform permissions required by the local DeskBridge process.
     Permissions {
@@ -89,6 +96,17 @@ enum Command {
     },
     /// Print the display size and mouse location seen by DeskBridge.
     DisplayInfo,
+    /// Move the local pointer through the same injection path used by the client.
+    InjectTest {
+        #[arg(long)]
+        x: Option<i32>,
+        #[arg(long)]
+        y: Option<i32>,
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        dx: i32,
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        dy: i32,
+    },
     /// Create a default JSON config file.
     InitConfig {
         #[arg(long, default_value = "deskbridge.json")]
@@ -204,6 +222,9 @@ async fn main() -> Result<()> {
             steps,
             dx,
             dy,
+            return_dx,
+            return_dy,
+            return_steps,
         } => {
             let config = load_config(config)?;
             let from_screen = from_screen
@@ -217,16 +238,32 @@ async fn main() -> Result<()> {
                 .map(|cfg| cfg.layout.clone())
                 .unwrap_or_else(|| default_layout(&from_screen, std::slice::from_ref(&to_screen)));
 
-            let events = simulate_route(&layout, &from_screen, &to_screen, edge, steps, dx, dy)?;
             println!("DeskBridge route simulation");
             println!("layout: {from_screen} {edge:?} -> {to_screen}");
-            for event in events {
-                println!(
-                    "event {}: target={} {}",
-                    event.index,
-                    event.target_screen,
-                    describe_input_event(&event.event)
-                );
+            if return_dx.is_some() || return_dy.is_some() {
+                simulate_route_with_return(ReturnSimulation {
+                    layout: &layout,
+                    from_screen: &from_screen,
+                    to_screen: &to_screen,
+                    edge,
+                    outbound_steps: steps,
+                    outbound_dx: dx,
+                    outbound_dy: dy,
+                    return_dx: return_dx.unwrap_or(0),
+                    return_dy: return_dy.unwrap_or(0),
+                    return_steps,
+                })?;
+            } else {
+                let events =
+                    simulate_route(&layout, &from_screen, &to_screen, edge, steps, dx, dy)?;
+                for event in events {
+                    println!(
+                        "event {}: target={} {}",
+                        event.index,
+                        event.target_screen,
+                        describe_input_event(&event.event)
+                    );
+                }
             }
             println!("result: ok");
             Ok(())
@@ -243,6 +280,10 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::InjectTest { x, y, dx, dy } => {
+            run_inject_test(x, y, dx, dy).await?;
+            Ok(())
+        }
         Command::InitConfig { path } => {
             DeskBridgeConfig::default().save(&path)?;
             println!("wrote {}", path.display());
@@ -255,6 +296,150 @@ fn load_config(path: Option<PathBuf>) -> Result<Option<DeskBridgeConfig>> {
     path.map(DeskBridgeConfig::load)
         .transpose()
         .map_err(Into::into)
+}
+
+struct ReturnSimulation<'a> {
+    layout: &'a Layout,
+    from_screen: &'a str,
+    to_screen: &'a str,
+    edge: Edge,
+    outbound_steps: usize,
+    outbound_dx: i32,
+    outbound_dy: i32,
+    return_dx: i32,
+    return_dy: i32,
+    return_steps: usize,
+}
+
+fn simulate_route_with_return(options: ReturnSimulation<'_>) -> Result<()> {
+    let (x, y) = simulation_edge_point(options.layout, options.from_screen, options.edge)?;
+    let mut router = InputRouter::new(options.layout.clone(), options.from_screen.to_string())?;
+    let first = router.observe_local_pointer(x, y).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no linked transition from {} on {:?}",
+            options.from_screen,
+            options.edge
+        )
+    })?;
+    if first.target_screen != options.to_screen {
+        anyhow::bail!(
+            "transition targeted '{}', expected '{}'",
+            first.target_screen,
+            options.to_screen
+        );
+    }
+
+    println!(
+        "event 0: target={} {}",
+        first.target_screen,
+        describe_input_event(&first.event)
+    );
+
+    let mut index = 0;
+    for _ in 0..options.outbound_steps {
+        index += 1;
+        let routed = router
+            .route_if_remote_active(InputEvent::MouseMove {
+                dx: options.outbound_dx,
+                dy: options.outbound_dy,
+            })
+            .ok_or_else(|| anyhow::anyhow!("remote screen stopped receiving routed input"))?;
+        println!(
+            "event {index}: target={} {}",
+            routed.target_screen,
+            describe_input_event(&routed.event)
+        );
+    }
+
+    for _ in 0..options.return_steps {
+        index += 1;
+        match router.route_if_remote_active(InputEvent::MouseMove {
+            dx: options.return_dx,
+            dy: options.return_dy,
+        }) {
+            Some(routed) => println!(
+                "event {index}: target={} {}",
+                routed.target_screen,
+                describe_input_event(&routed.event)
+            ),
+            None => {
+                println!("release {index}: active={}", router.active_screen());
+                return Ok(());
+            }
+        }
+    }
+
+    println!("release: not reached; active={}", router.active_screen());
+    Ok(())
+}
+
+fn simulation_edge_point(layout: &Layout, screen_name: &str, edge: Edge) -> Result<(u32, u32)> {
+    let screen = layout
+        .screens
+        .iter()
+        .find(|screen| screen.name == screen_name)
+        .ok_or_else(|| anyhow::anyhow!("layout does not include screen '{screen_name}'"))?;
+    let max_x = screen.size.width.saturating_sub(1);
+    let max_y = screen.size.height.saturating_sub(1);
+    let mid_x = screen.size.width / 2;
+    let mid_y = screen.size.height / 2;
+
+    Ok(match edge {
+        Edge::Left => (0, mid_y),
+        Edge::Right => (max_x, mid_y),
+        Edge::Top => (mid_x, 0),
+        Edge::Bottom => (mid_x, max_y),
+    })
+}
+
+async fn run_inject_test(x: Option<i32>, y: Option<i32>, dx: i32, dy: i32) -> Result<()> {
+    let before = input::display_info()?;
+    let mut sink = input::EnigoSink::new()?;
+
+    println!("DeskBridge injection test");
+    println!(
+        "before: display={}x{} location={}",
+        before.size.width,
+        before.size.height,
+        format_location(before.location)
+    );
+
+    match (x, y) {
+        (Some(x), Some(y)) => {
+            sink.apply(&InputPacket {
+                seq: 1,
+                event: InputEvent::MouseAbs { x, y },
+            })
+            .await?;
+        }
+        (None, None) => {}
+        _ => anyhow::bail!("--x and --y must be provided together"),
+    }
+
+    if dx != 0 || dy != 0 {
+        sink.apply(&InputPacket {
+            seq: 2,
+            event: InputEvent::MouseMove { dx, dy },
+        })
+        .await?;
+    }
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let after = input::display_info()?;
+    println!(
+        "after: display={}x{} location={}",
+        after.size.width,
+        after.size.height,
+        format_location(after.location)
+    );
+
+    Ok(())
+}
+
+fn format_location(location: Option<(i32, i32)>) -> String {
+    location
+        .map(|(x, y)| format!("x={x} y={y}"))
+        .unwrap_or_else(|| "unavailable".to_string())
 }
 
 fn default_layout(server_name: &str, clients: &[String]) -> Layout {

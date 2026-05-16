@@ -15,6 +15,7 @@ rust-version = "1.95"
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 clap = { version = "4.5.53", features = ["derive", "env"] }
+core-graphics = "0.25.0"
 enigo = "0.6.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

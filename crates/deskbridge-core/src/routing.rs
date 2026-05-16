@@ -12,6 +12,15 @@ pub struct InputRouter {
     local_screen: String,
     active_screen: String,
     edge_threshold: u32,
+    remote_pointer: Option<RemotePointer>,
+}
+
+#[derive(Debug, Clone)]
+struct RemotePointer {
+    screen: String,
+    return_edge: Edge,
+    x: i32,
+    y: i32,
 }
 
 impl InputRouter {
@@ -31,6 +40,7 @@ impl InputRouter {
             local_screen,
             layout,
             edge_threshold: 2,
+            remote_pointer: None,
         })
     }
 
@@ -45,6 +55,7 @@ impl InputRouter {
 
     pub fn release_to_local(&mut self) {
         self.active_screen.clone_from(&self.local_screen);
+        self.remote_pointer = None;
     }
 
     pub fn observe_local_pointer(&mut self, x: u32, y: u32) -> Option<RoutedInput> {
@@ -55,6 +66,12 @@ impl InputRouter {
         let edge = self.edge_for_pointer(x, y)?;
         let transition = self.layout.transition(&self.local_screen, edge, x, y)?;
         self.active_screen.clone_from(&transition.target_screen);
+        self.remote_pointer = Some(RemotePointer {
+            screen: transition.target_screen.clone(),
+            return_edge: transition.target_edge,
+            x: transition.x as i32,
+            y: transition.y as i32,
+        });
 
         Some(RoutedInput {
             target_screen: transition.target_screen,
@@ -65,15 +82,91 @@ impl InputRouter {
         })
     }
 
-    pub fn route_if_remote_active(&self, event: InputEvent) -> Option<RoutedInput> {
+    pub fn route_if_remote_active(&mut self, event: InputEvent) -> Option<RoutedInput> {
         if self.active_screen == self.local_screen {
             return None;
         }
+
+        if self.remote_event_returns_to_local(&event) {
+            self.release_to_local();
+            return None;
+        }
+
+        self.update_remote_pointer(&event);
 
         Some(RoutedInput {
             target_screen: self.active_screen.clone(),
             event,
         })
+    }
+
+    fn remote_event_returns_to_local(&self, event: &InputEvent) -> bool {
+        let Some(pointer) = &self.remote_pointer else {
+            return false;
+        };
+        let InputEvent::MouseMove { dx, dy } = event else {
+            return false;
+        };
+
+        let next_x = pointer.x + *dx;
+        let next_y = pointer.y + *dy;
+        let threshold = self.edge_threshold as i32;
+
+        match pointer.return_edge {
+            Edge::Left => next_x <= threshold && *dx < 0,
+            Edge::Right => {
+                self.screen_size(&pointer.screen)
+                    .is_some_and(|(width, _)| next_x >= width - 1 - threshold)
+                    && *dx > 0
+            }
+            Edge::Top => next_y <= threshold && *dy < 0,
+            Edge::Bottom => {
+                self.screen_size(&pointer.screen)
+                    .is_some_and(|(_, height)| next_y >= height - 1 - threshold)
+                    && *dy > 0
+            }
+        }
+    }
+
+    fn update_remote_pointer(&mut self, event: &InputEvent) {
+        let Some(screen_name) = self
+            .remote_pointer
+            .as_ref()
+            .map(|pointer| pointer.screen.clone())
+        else {
+            return;
+        };
+
+        let Some((width, height)) = self.screen_size(&screen_name) else {
+            return;
+        };
+
+        let Some(pointer) = &mut self.remote_pointer else {
+            return;
+        };
+
+        match event {
+            InputEvent::MouseMove { dx, dy } => {
+                pointer.x = (pointer.x + *dx).clamp(0, width - 1);
+                pointer.y = (pointer.y + *dy).clamp(0, height - 1);
+            }
+            InputEvent::MouseAbs { x, y } => {
+                pointer.x = (*x).clamp(0, width - 1);
+                pointer.y = (*y).clamp(0, height - 1);
+            }
+            InputEvent::MouseButton { .. }
+            | InputEvent::Wheel { .. }
+            | InputEvent::Key { .. }
+            | InputEvent::Text { .. } => {}
+        }
+    }
+
+    fn screen_size(&self, screen_name: &str) -> Option<(i32, i32)> {
+        self.layout
+            .screens
+            .iter()
+            .find(|screen| screen.name == screen_name)
+            .map(|screen| (screen.size.width as i32, screen.size.height as i32))
     }
 
     fn edge_for_pointer(&self, x: u32, y: u32) -> Option<Edge> {
@@ -177,6 +270,46 @@ mod tests {
 
         assert_eq!(routed.target_screen, "mac");
         assert_eq!(routed.event, InputEvent::MouseMove { dx: 50, dy: -3 });
+    }
+
+    #[test]
+    fn moving_back_across_entry_edge_releases_to_local() {
+        let mut router = InputRouter::new(layout(), "windows").unwrap();
+        router.observe_local_pointer(1919, 540).unwrap();
+
+        assert_eq!(
+            router.route_if_remote_active(InputEvent::MouseMove { dx: 50, dy: 0 }),
+            Some(RoutedInput {
+                target_screen: "mac".to_string(),
+                event: InputEvent::MouseMove { dx: 50, dy: 0 },
+            })
+        );
+        assert_eq!(
+            router.route_if_remote_active(InputEvent::MouseMove { dx: -60, dy: 0 }),
+            None
+        );
+        assert_eq!(router.active_screen(), "windows");
+        assert_eq!(
+            router.route_if_remote_active(InputEvent::Key {
+                key: "a".to_string(),
+                state: crate::KeyState::Clicked,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn moving_parallel_to_entry_edge_stays_remote() {
+        let mut router = InputRouter::new(layout(), "windows").unwrap();
+        router.observe_local_pointer(1919, 540).unwrap();
+
+        let routed = router
+            .route_if_remote_active(InputEvent::MouseMove { dx: 0, dy: 25 })
+            .unwrap();
+
+        assert_eq!(router.active_screen(), "mac");
+        assert_eq!(routed.target_screen, "mac");
+        assert_eq!(routed.event, InputEvent::MouseMove { dx: 0, dy: 25 });
     }
 
     #[test]

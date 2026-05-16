@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Darwin
 import Foundation
 
 @MainActor
@@ -142,12 +143,15 @@ final class DeskBridgeModel: ObservableObject {
             return
         }
 
+        terminateStaleClientProcesses()
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = [
             "client",
             "--server", normalizedServerAddress,
             "--name", screenName,
+            "--reconnect",
         ]
 
         let pipe = Pipe()
@@ -313,6 +317,28 @@ final class DeskBridgeModel: ObservableObject {
         }
 
         self.process = nil
+    }
+
+    private func terminateStaleClientProcesses() {
+        let matches = runDeskBridgeProcess(
+            binary: "/usr/bin/pgrep",
+            arguments: ["-f", "\(binaryPath) client"]
+        )
+
+        let currentPid = ProcessInfo.processInfo.processIdentifier
+        let pids = matches
+            .split(whereSeparator: \.isNewline)
+            .compactMap { Int32(String($0).trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { $0 > 0 && $0 != currentPid }
+
+        guard !pids.isEmpty else { return }
+
+        for pid in pids {
+            _ = Darwin.kill(pid, SIGTERM)
+        }
+
+        let pidList = pids.map(String.init).joined(separator: ", ")
+        lastLogLine = "Stopped stale DeskBridge client process: \(pidList)"
     }
 
     private var supportDirectory: URL {

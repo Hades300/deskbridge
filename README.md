@@ -104,10 +104,20 @@ Simulate a configured edge crossing without moving the real mouse:
 
 ```bash
 deskbridge simulate-route --config examples/deskbridge.json --steps 3 --dx 80 --dy -2
+deskbridge simulate-route --config examples/deskbridge.json --steps 2 --dx 80 --dy 0 --return-dx -200 --return-dy 0
 ```
 
 Expected output starts with a `MouseAbs` event that lands on the linked Mac edge, followed by repeated `MouseMove` events still targeted at `mac`.
+When `--return-dx` or `--return-dy` is provided, the simulation continues with reverse movement and prints a `release` line when input returns to the Windows screen.
 When a real client connects, DeskBridge includes the client display size in the handshake so the server can map the crossing height to the actual Mac screen instead of a default size.
+
+Test local macOS injection without Windows:
+
+```bash
+deskbridge inject-test --x 1 --y 559 --dx 80 --dy -2
+```
+
+This moves the local pointer through the same input path used by the DeskBridge client and prints the pointer location before and after injection.
 
 Use `--dry-run` on the client to validate the protocol without injecting input.
 

@@ -51,6 +51,12 @@ if ! grep -q "event 3: target=mac MouseMove dx=80 dy=-2" /tmp/deskbridge-route-s
   echo "route simulation did not keep routing relative mouse movement"
   exit 1
 fi
+"$ROOT/target/debug/deskbridge" simulate-route --config "$TMP_CONFIG" --steps 2 --dx 80 --dy 0 --return-dx -200 --return-dy 0 >/tmp/deskbridge-route-return.out
+if ! grep -q "release 3: active=windows" /tmp/deskbridge-route-return.out; then
+  cat /tmp/deskbridge-route-return.out
+  echo "route simulation did not release input back to windows"
+  exit 1
+fi
 
 echo "== Loopback protocol test =="
 SERVER_LOG="$(mktemp /tmp/deskbridge-server.XXXXXX)"
