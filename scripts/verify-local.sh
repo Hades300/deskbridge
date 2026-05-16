@@ -39,6 +39,19 @@ if ! grep -q "DeskBridge diagnostics" /tmp/deskbridge-diag-offline.out; then
   exit 1
 fi
 
+echo "== Route simulation test =="
+"$ROOT/target/debug/deskbridge" simulate-route --config "$TMP_CONFIG" --steps 3 --dx 80 --dy -2 >/tmp/deskbridge-route-simulation.out
+if ! grep -q "event 0: target=mac MouseAbs x=1 y=559" /tmp/deskbridge-route-simulation.out; then
+  cat /tmp/deskbridge-route-simulation.out
+  echo "route simulation did not cross to mac"
+  exit 1
+fi
+if ! grep -q "event 3: target=mac MouseMove dx=80 dy=-2" /tmp/deskbridge-route-simulation.out; then
+  cat /tmp/deskbridge-route-simulation.out
+  echo "route simulation did not keep routing relative mouse movement"
+  exit 1
+fi
+
 echo "== Loopback protocol test =="
 SERVER_LOG="$(mktemp /tmp/deskbridge-server.XXXXXX)"
 CLIENT_LOG="$(mktemp /tmp/deskbridge-client.XXXXXX)"

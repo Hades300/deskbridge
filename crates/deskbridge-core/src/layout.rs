@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -18,6 +19,22 @@ impl Edge {
             Self::Right => Self::Left,
             Self::Top => Self::Bottom,
             Self::Bottom => Self::Top,
+        }
+    }
+}
+
+impl FromStr for Edge {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "top" => Ok(Self::Top),
+            "bottom" => Ok(Self::Bottom),
+            _ => Err(format!(
+                "expected one of: left, right, top, bottom; got {value:?}"
+            )),
         }
     }
 }

@@ -17,8 +17,8 @@ Implemented:
 - Rust protocol core with framed JSON messages.
 - Heartbeat, ping/pong, allow-list handshake, status messages.
 - JSON config model with screen layout, physical edge links, and reliability settings.
-- Rust `deskbridge` daemon with `server`, `client`, and `diag` commands.
-- Windows host capture path behind `deskbridge server --capture`, using low-level mouse/keyboard hooks.
+- Rust `deskbridge` daemon with `server`, `client`, `diag`, and `simulate-route` commands.
+- Windows host capture path behind `deskbridge server --capture`, using Raw Input for relative mouse motion and low-level hooks for edge detection, buttons, wheel, and keyboard.
 - macOS native Swift status bar/config app built with SwiftPM.
 - macOS app supervision for reconnect/restart behavior when the daemon exits.
 - Windows WPF admin panel scaffold for server configuration and `--capture` launch.
@@ -98,6 +98,14 @@ Run diagnostics:
 deskbridge diag --server 192.168.2.5:24800 --name mac
 deskbridge diag --config examples/deskbridge.json
 ```
+
+Simulate a configured edge crossing without moving the real mouse:
+
+```bash
+deskbridge simulate-route --config examples/deskbridge.json --steps 3 --dx 80 --dy -2
+```
+
+Expected output starts with a `MouseAbs` event that lands on the linked Mac edge, followed by repeated `MouseMove` events still targeted at `mac`.
 
 Use `--dry-run` on the client to validate the protocol without injecting input.
 

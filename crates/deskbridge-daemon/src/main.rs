@@ -7,8 +7,11 @@ mod server;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use deskbridge_core::{DEFAULT_HEARTBEAT_MS, DeskBridgeConfig, Edge, Layout, Link, Screen, Size};
-use std::{net::SocketAddr, path::PathBuf};
+use deskbridge_core::{
+    DEFAULT_HEARTBEAT_MS, DeskBridgeConfig, Edge, InputEvent, Layout, Link, Screen, Size,
+    simulate_route,
+};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -61,6 +64,23 @@ enum Command {
         server: Option<SocketAddr>,
         #[arg(long, default_value = "mac")]
         name: String,
+    },
+    /// Simulate a configured edge crossing and continued remote mouse movement.
+    SimulateRoute {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long = "from")]
+        from_screen: Option<String>,
+        #[arg(long = "to")]
+        to_screen: Option<String>,
+        #[arg(long, default_value = "right", value_parser = parse_edge)]
+        edge: Edge,
+        #[arg(long, default_value_t = 5)]
+        steps: usize,
+        #[arg(long, default_value_t = 120, allow_hyphen_values = true)]
+        dx: i32,
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        dy: i32,
     },
     /// Check platform permissions required by the local DeskBridge process.
     Permissions {
@@ -174,6 +194,41 @@ async fn main() -> Result<()> {
                 .unwrap_or(name);
             diag::run(server, name).await
         }
+        Command::SimulateRoute {
+            config,
+            from_screen,
+            to_screen,
+            edge,
+            steps,
+            dx,
+            dy,
+        } => {
+            let config = load_config(config)?;
+            let from_screen = from_screen
+                .or_else(|| config.as_ref().map(|cfg| cfg.server.name.clone()))
+                .unwrap_or_else(|| "windows".to_string());
+            let to_screen = to_screen
+                .or_else(|| config.as_ref().map(|cfg| cfg.client.name.clone()))
+                .unwrap_or_else(|| "mac".to_string());
+            let layout = config
+                .as_ref()
+                .map(|cfg| cfg.layout.clone())
+                .unwrap_or_else(|| default_layout(&from_screen, std::slice::from_ref(&to_screen)));
+
+            let events = simulate_route(&layout, &from_screen, &to_screen, edge, steps, dx, dy)?;
+            println!("DeskBridge route simulation");
+            println!("layout: {from_screen} {edge:?} -> {to_screen}");
+            for event in events {
+                println!(
+                    "event {}: target={} {}",
+                    event.index,
+                    event.target_screen,
+                    describe_input_event(&event.event)
+                );
+            }
+            println!("result: ok");
+            Ok(())
+        }
         Command::Permissions { prompt } => permissions::run(prompt),
         Command::InitConfig { path } => {
             DeskBridgeConfig::default().save(&path)?;
@@ -230,4 +285,21 @@ fn init_tracing() {
         .with_target(false)
         .compact()
         .init();
+}
+
+fn parse_edge(value: &str) -> Result<Edge, String> {
+    Edge::from_str(value)
+}
+
+fn describe_input_event(event: &InputEvent) -> String {
+    match event {
+        InputEvent::MouseMove { dx, dy } => format!("MouseMove dx={dx} dy={dy}"),
+        InputEvent::MouseAbs { x, y } => format!("MouseAbs x={x} y={y}"),
+        InputEvent::MouseButton { button, state } => {
+            format!("MouseButton button={button:?} state={state:?}")
+        }
+        InputEvent::Wheel { dx, dy } => format!("Wheel dx={dx} dy={dy}"),
+        InputEvent::Key { key, state } => format!("Key key={key} state={state:?}"),
+        InputEvent::Text { text } => format!("Text text={text:?}"),
+    }
 }
