@@ -421,28 +421,6 @@ fn map_print_screen_key() -> Option<enigo::Key> {
     Some(enigo::Key::PrintScr)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn maps_modifier_aliases() {
-        assert_eq!(map_key("shift"), Some(enigo::Key::Shift));
-        assert_eq!(map_key("left_shift"), Some(enigo::Key::LShift));
-        assert_eq!(map_key("right_shift"), Some(enigo::Key::RShift));
-        assert_eq!(map_key("meta"), Some(enigo::Key::Meta));
-        assert_eq!(map_key("win"), Some(enigo::Key::Meta));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn maps_symbol_keys_to_macos_physical_keycodes() {
-        assert_eq!(map_key("equal"), Some(enigo::Key::Other(24)));
-        assert_eq!(map_key("minus"), Some(enigo::Key::Other(27)));
-        assert_eq!(map_key("slash"), Some(enigo::Key::Other(44)));
-    }
-}
-
 #[cfg(all(unix, not(target_os = "macos")))]
 fn physical_minus_key() -> enigo::Key {
     enigo::Key::Unicode('-')
@@ -516,4 +494,26 @@ fn map_pause_key() -> Option<enigo::Key> {
 #[cfg(all(unix, not(target_os = "macos")))]
 fn map_print_screen_key() -> Option<enigo::Key> {
     Some(enigo::Key::PrintScr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_modifier_aliases() {
+        assert_eq!(map_key("shift"), Some(enigo::Key::Shift));
+        assert_eq!(map_key("left_shift"), Some(enigo::Key::LShift));
+        assert_eq!(map_key("right_shift"), Some(enigo::Key::RShift));
+        assert_eq!(map_key("meta"), Some(enigo::Key::Meta));
+        assert_eq!(map_key("win"), Some(enigo::Key::Meta));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn maps_symbol_keys_to_macos_physical_keycodes() {
+        assert_eq!(map_key("equal"), Some(enigo::Key::Other(24)));
+        assert_eq!(map_key("minus"), Some(enigo::Key::Other(27)));
+        assert_eq!(map_key("slash"), Some(enigo::Key::Other(44)));
+    }
 }
