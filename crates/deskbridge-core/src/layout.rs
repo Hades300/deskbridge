@@ -142,6 +142,25 @@ impl Layout {
             .collect()
     }
 
+    pub fn set_screen_size_preserving_links(&mut self, screen_name: &str, size: Size) -> bool {
+        let old_layout = self.clone();
+        let Some(screen) = self
+            .screens
+            .iter_mut()
+            .find(|screen| screen.name == screen_name)
+        else {
+            return false;
+        };
+
+        if screen.size == size {
+            return true;
+        }
+
+        screen.size = size;
+        self.reconcile_linked_origins(&old_layout, screen_name);
+        true
+    }
+
     pub fn transition(&self, from: &str, edge: Edge, x: u32, y: u32) -> Option<Transition> {
         let screen_by_name = self
             .screens
@@ -185,6 +204,146 @@ impl Layout {
             y: mapped_y,
         })
     }
+
+    fn reconcile_linked_origins(&mut self, old_layout: &Layout, changed_screen: &str) {
+        for link in self.links.clone() {
+            if link.from == changed_screen || link.to == changed_screen {
+                self.reconcile_target_origin(old_layout, &link);
+            }
+        }
+    }
+
+    fn reconcile_target_origin(&mut self, old_layout: &Layout, link: &Link) {
+        let Some(old_source) = old_layout.screen(&link.from) else {
+            return;
+        };
+        let Some(old_target) = old_layout.screen(&link.to) else {
+            return;
+        };
+        let Some(new_source) = self.screen(&link.from).cloned() else {
+            return;
+        };
+        let Some(target_index) = self
+            .screens
+            .iter()
+            .position(|screen| screen.name == link.to)
+        else {
+            return;
+        };
+
+        let Some(source_origin) = new_source.origin else {
+            return;
+        };
+        let Some(mut target_origin) = self.screens[target_index].origin else {
+            return;
+        };
+        let Some(old_source_rect) = ScreenRect::from_screen(old_source) else {
+            return;
+        };
+        let Some(old_target_rect) = ScreenRect::from_screen(old_target) else {
+            return;
+        };
+
+        let source_width = size_to_i32(new_source.size.width);
+        let source_height = size_to_i32(new_source.size.height);
+        let target_width = size_to_i32(self.screens[target_index].size.width);
+        let target_height = size_to_i32(self.screens[target_index].size.height);
+
+        match link.edge {
+            Edge::Left => {
+                target_origin.x = source_origin.x.saturating_sub(target_width);
+                target_origin.y = reconcile_vertical_origin(
+                    source_origin.y,
+                    source_height,
+                    target_height,
+                    old_source_rect,
+                    old_target_rect,
+                );
+            }
+            Edge::Right => {
+                target_origin.x = source_origin.x.saturating_add(source_width);
+                target_origin.y = reconcile_vertical_origin(
+                    source_origin.y,
+                    source_height,
+                    target_height,
+                    old_source_rect,
+                    old_target_rect,
+                );
+            }
+            Edge::Top => {
+                target_origin.x = reconcile_horizontal_origin(
+                    source_origin.x,
+                    source_width,
+                    target_width,
+                    old_source_rect,
+                    old_target_rect,
+                );
+                target_origin.y = source_origin.y.saturating_sub(target_height);
+            }
+            Edge::Bottom => {
+                target_origin.x = reconcile_horizontal_origin(
+                    source_origin.x,
+                    source_width,
+                    target_width,
+                    old_source_rect,
+                    old_target_rect,
+                );
+                target_origin.y = source_origin.y.saturating_add(source_height);
+            }
+        }
+
+        self.screens[target_index].origin = Some(target_origin);
+    }
+
+    fn screen(&self, name: &str) -> Option<&Screen> {
+        self.screens.iter().find(|screen| screen.name == name)
+    }
+}
+
+fn reconcile_vertical_origin(
+    source_top: i32,
+    source_height: i32,
+    target_height: i32,
+    old_source: ScreenRect,
+    old_target: ScreenRect,
+) -> i32 {
+    if near(old_target.bottom, old_source.bottom) {
+        return source_top
+            .saturating_add(source_height)
+            .saturating_sub(target_height);
+    }
+    if near(old_target.top, old_source.top) {
+        return source_top;
+    }
+
+    source_top.saturating_add(old_target.top.saturating_sub(old_source.top))
+}
+
+fn reconcile_horizontal_origin(
+    source_left: i32,
+    source_width: i32,
+    target_width: i32,
+    old_source: ScreenRect,
+    old_target: ScreenRect,
+) -> i32 {
+    if near(old_target.right, old_source.right) {
+        return source_left
+            .saturating_add(source_width)
+            .saturating_sub(target_width);
+    }
+    if near(old_target.left, old_source.left) {
+        return source_left;
+    }
+
+    source_left.saturating_add(old_target.left.saturating_sub(old_source.left))
+}
+
+fn near(left: i32, right: i32) -> bool {
+    left.abs_diff(right) <= 1
+}
+
+fn size_to_i32(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
 }
 
 fn positioned_transition(
@@ -370,5 +529,97 @@ mod tests {
         assert_eq!(transition.target_screen, "mac");
         assert_eq!(transition.x, 1);
         assert_eq!(transition.y, 360);
+    }
+
+    #[test]
+    fn screen_size_update_preserves_bottom_aligned_side_portal() {
+        let mut layout = Layout {
+            screens: vec![
+                Screen {
+                    name: "windows".to_string(),
+                    size: Size {
+                        width: 1920,
+                        height: 1080,
+                    },
+                    origin: Some(Point { x: 0, y: 0 }),
+                },
+                Screen {
+                    name: "mac".to_string(),
+                    size: Size {
+                        width: 1728,
+                        height: 1117,
+                    },
+                    origin: Some(Point { x: -1728, y: -37 }),
+                },
+            ],
+            links: vec![Link {
+                from: "windows".to_string(),
+                edge: Edge::Left,
+                to: "mac".to_string(),
+            }],
+        };
+
+        assert!(layout.transition("windows", Edge::Left, 0, 1079).is_some());
+
+        assert!(layout.set_screen_size_preserving_links(
+            "mac",
+            Size {
+                width: 1512,
+                height: 982,
+            },
+        ));
+
+        let mac = layout.screen("mac").unwrap();
+        assert_eq!(mac.origin, Some(Point { x: -1512, y: 98 }));
+        let transition = layout.transition("windows", Edge::Left, 0, 1079).unwrap();
+        assert_eq!(transition.target_screen, "mac");
+        assert_eq!(transition.x, 1510);
+        assert_eq!(transition.y, 981);
+    }
+
+    #[test]
+    fn screen_size_update_preserves_top_aligned_side_portal() {
+        let mut layout = Layout {
+            screens: vec![
+                Screen {
+                    name: "windows".to_string(),
+                    size: Size {
+                        width: 1920,
+                        height: 1080,
+                    },
+                    origin: Some(Point { x: 0, y: 0 }),
+                },
+                Screen {
+                    name: "mac".to_string(),
+                    size: Size {
+                        width: 1728,
+                        height: 1117,
+                    },
+                    origin: Some(Point { x: 1920, y: 0 }),
+                },
+            ],
+            links: vec![Link {
+                from: "windows".to_string(),
+                edge: Edge::Right,
+                to: "mac".to_string(),
+            }],
+        };
+
+        assert!(layout.set_screen_size_preserving_links(
+            "mac",
+            Size {
+                width: 1512,
+                height: 982,
+            },
+        ));
+
+        let mac = layout.screen("mac").unwrap();
+        assert_eq!(mac.origin, Some(Point { x: 1920, y: 0 }));
+        assert!(layout.transition("windows", Edge::Right, 1919, 0).is_some());
+        assert!(
+            layout
+                .transition("windows", Edge::Right, 1919, 1079)
+                .is_none()
+        );
     }
 }

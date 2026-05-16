@@ -73,7 +73,7 @@ pub mod windows {
         GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
         LLMHF_INJECTED, MONITORINFOF_PRIMARY, MSG, MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN,
         SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-        SetProcessDPIAware, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+        SetProcessDPIAware, SetWindowsHookExW, ShowCursor, TranslateMessage, UnhookWindowsHookEx,
         WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
         WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
         WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
@@ -83,6 +83,7 @@ pub mod windows {
     static CAPTURE_BOUNDS: OnceLock<ScreenBounds> = OnceLock::new();
     static DPI_AWARENESS_CONFIGURED: OnceLock<()> = OnceLock::new();
     static SUPPRESS_LOCAL_INPUT: AtomicBool = AtomicBool::new(false);
+    static LOCAL_CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ScreenBounds {
@@ -181,6 +182,7 @@ pub mod windows {
 
     pub fn set_local_input_suppressed(suppressed: bool) {
         SUPPRESS_LOCAL_INPUT.store(suppressed, Ordering::SeqCst);
+        set_local_cursor_hidden(suppressed);
     }
 
     pub fn configure_process_dpi_awareness() {
@@ -217,6 +219,11 @@ pub mod windows {
                 capture
                     .map(describe_bounds)
                     .unwrap_or_else(|| "not_initialized".to_string())
+            ),
+            format!(
+                "windows_local_input suppressed={} cursor_hidden={}",
+                SUPPRESS_LOCAL_INPUT.load(Ordering::SeqCst),
+                LOCAL_CURSOR_HIDDEN.load(Ordering::SeqCst)
             ),
         ];
 
@@ -332,6 +339,28 @@ pub mod windows {
         let awareness = unsafe { GetAwarenessFromDpiAwarenessContext(context) };
         let dpi = unsafe { GetDpiFromDpiAwarenessContext(context) };
         format!("awareness={awareness} dpi={dpi}")
+    }
+
+    fn set_local_cursor_hidden(hidden: bool) {
+        if LOCAL_CURSOR_HIDDEN.swap(hidden, Ordering::SeqCst) == hidden {
+            return;
+        }
+
+        unsafe {
+            if hidden {
+                for _ in 0..32 {
+                    if ShowCursor(0) < 0 {
+                        break;
+                    }
+                }
+            } else {
+                for _ in 0..32 {
+                    if ShowCursor(1) >= 0 {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     fn create_raw_input_window() -> Result<HWND> {

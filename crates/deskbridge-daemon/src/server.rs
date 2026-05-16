@@ -190,14 +190,10 @@ fn apply_platform_layout(options: ServerOptions) -> ServerOptions {
     {
         let mut options = options;
         if let Some((width, height)) = crate::capture::windows::primary_screen_size()
-            && let Some(screen) = options
+            && options
                 .layout
-                .screens
-                .iter_mut()
-                .find(|screen| screen.name == options.name)
+                .set_screen_size_preserving_links(&options.name, Size { width, height })
         {
-            screen.size.width = width;
-            screen.size.height = height;
             info!(
                 screen = options.name,
                 width, height, "using platform screen size for routing"
@@ -210,14 +206,10 @@ fn apply_platform_layout(options: ServerOptions) -> ServerOptions {
     {
         let mut options = options;
         if let Some((width, height)) = crate::capture::macos::primary_screen_size()
-            && let Some(screen) = options
+            && options
                 .layout
-                .screens
-                .iter_mut()
-                .find(|screen| screen.name == options.name)
+                .set_screen_size_preserving_links(&options.name, Size { width, height })
         {
-            screen.size.width = width;
-            screen.size.height = height;
             info!(
                 screen = options.name,
                 width, height, "using platform screen size for routing"
@@ -238,16 +230,13 @@ fn apply_client_screen_size(options: &mut ServerOptions, hello: &Hello) {
         return;
     }
 
-    if let Some(screen) = options
-        .layout
-        .screens
-        .iter_mut()
-        .find(|screen| screen.name == hello.screen_name)
-    {
-        screen.size = Size {
+    if options.layout.set_screen_size_preserving_links(
+        &hello.screen_name,
+        Size {
             width: size.width,
             height: size.height,
-        };
+        },
+    ) {
         info!(
             screen = hello.screen_name,
             width = size.width,
