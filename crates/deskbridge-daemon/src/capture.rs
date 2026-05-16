@@ -17,13 +17,28 @@ pub fn channel() -> (CaptureSender, CaptureReceiver) {
     broadcast::channel(256)
 }
 
+pub fn set_local_input_suppressed(suppressed: bool) {
+    set_platform_local_input_suppressed(suppressed);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_platform_local_input_suppressed(_suppressed: bool) {}
+
+#[cfg(target_os = "windows")]
+fn set_platform_local_input_suppressed(suppressed: bool) {
+    windows::set_local_input_suppressed(suppressed);
+}
+
 #[cfg(target_os = "windows")]
 pub mod windows {
     use super::{CaptureEvent, CaptureSender, InputEvent};
     use anyhow::{Result, anyhow};
     use deskbridge_core::{Button, KeyState};
     use std::mem::size_of;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    };
     use std::{
         ptr::{null, null_mut},
         thread,
@@ -31,8 +46,16 @@ pub mod windows {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT,
-        VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+        VK_ADD, VK_APPS, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_DECIMAL, VK_DELETE, VK_DIVIDE,
+        VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9,
+        VK_F10, VK_F11, VK_F12, VK_F13, VK_F14, VK_F15, VK_F16, VK_F17, VK_F18, VK_F19, VK_F20,
+        VK_F21, VK_F22, VK_F23, VK_F24, VK_HOME, VK_INSERT, VK_LCONTROL, VK_LEFT, VK_LMENU,
+        VK_LSHIFT, VK_LWIN, VK_MENU, VK_MULTIPLY, VK_NEXT, VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2,
+        VK_NUMPAD3, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9,
+        VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_102,
+        VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_PAUSE, VK_PRIOR, VK_RCONTROL,
+        VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SCROLL, VK_SHIFT, VK_SNAPSHOT,
+        VK_SPACE, VK_SUBTRACT, VK_TAB, VK_UP,
     };
     use windows_sys::Win32::UI::Input::{
         GetRawInputData, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
@@ -40,16 +63,17 @@ pub mod windows {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-        GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, RegisterClassW,
-        SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-        SM_YVIRTUALSCREEN, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-        WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-        WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
-        WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
+        GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
+        MSLLHOOKSTRUCT, RegisterClassW, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN,
+        SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetWindowsHookExW,
+        TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN,
+        WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
     };
 
     static CAPTURE_TX: OnceLock<Mutex<CaptureSender>> = OnceLock::new();
     static CAPTURE_BOUNDS: OnceLock<ScreenBounds> = OnceLock::new();
+    static SUPPRESS_LOCAL_INPUT: AtomicBool = AtomicBool::new(false);
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ScreenBounds {
@@ -143,6 +167,10 @@ pub mod windows {
             })
             .map(|_| ())
             .map_err(|err| anyhow!("failed to spawn windows capture thread: {err}"))
+    }
+
+    pub fn set_local_input_suppressed(suppressed: bool) {
+        SUPPRESS_LOCAL_INPUT.store(suppressed, Ordering::SeqCst);
     }
 
     pub fn primary_screen_size() -> Option<(u32, u32)> {
@@ -308,24 +336,52 @@ pub mod windows {
     }
 
     unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let mut suppress = false;
         if code == HC_ACTION as i32 {
             for event in unsafe { mouse_events_from_hook(wparam, lparam) } {
                 send(event);
             }
+            suppress = unsafe { should_suppress_mouse(lparam) };
         }
 
-        unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
+        if suppress {
+            1
+        } else {
+            unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
+        }
     }
 
     unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let mut suppress = false;
         if code == HC_ACTION as i32 {
             let event = unsafe { keyboard_event_from_hook(wparam, lparam) };
             if let Some(event) = event {
                 send(event);
             }
+            suppress = unsafe { should_suppress_keyboard(lparam) };
         }
 
-        unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
+        if suppress {
+            1
+        } else {
+            unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
+        }
+    }
+
+    unsafe fn should_suppress_mouse(lparam: LPARAM) -> bool {
+        if !SUPPRESS_LOCAL_INPUT.load(Ordering::SeqCst) {
+            return false;
+        }
+        let hook = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
+        hook.flags & LLMHF_INJECTED == 0
+    }
+
+    unsafe fn should_suppress_keyboard(lparam: LPARAM) -> bool {
+        if !SUPPRESS_LOCAL_INPUT.load(Ordering::SeqCst) {
+            return false;
+        }
+        let hook = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+        hook.flags & LLKHF_INJECTED == 0
     }
 
     unsafe fn mouse_events_from_hook(wparam: WPARAM, lparam: LPARAM) -> Vec<CaptureEvent> {
@@ -379,18 +435,80 @@ pub mod windows {
         let vk_code = vk_code as u16;
         let key = match vk_code {
             VK_BACK => "backspace",
-            VK_CONTROL => "control",
+            VK_CAPITAL => "capslock",
+            VK_CONTROL | VK_LCONTROL | VK_RCONTROL => "control",
             VK_DELETE => "delete",
             VK_DOWN => "down",
+            VK_END => "end",
             VK_ESCAPE => "escape",
+            VK_HOME => "home",
+            VK_INSERT => "insert",
             VK_LEFT => "left",
-            VK_MENU => "alt",
+            VK_LWIN | VK_RWIN => "meta",
+            VK_MENU | VK_LMENU | VK_RMENU => "alt",
+            VK_NEXT => "pagedown",
+            VK_PAUSE => "pause",
+            VK_PRIOR => "pageup",
             VK_RETURN => "enter",
             VK_RIGHT => "right",
-            VK_SHIFT => "shift",
+            VK_SCROLL => "scrolllock",
+            VK_SHIFT | VK_LSHIFT | VK_RSHIFT => "shift",
+            VK_SNAPSHOT => "printscreen",
             VK_SPACE => "space",
             VK_TAB => "tab",
             VK_UP => "up",
+            VK_APPS => "apps",
+            VK_F1 => "f1",
+            VK_F2 => "f2",
+            VK_F3 => "f3",
+            VK_F4 => "f4",
+            VK_F5 => "f5",
+            VK_F6 => "f6",
+            VK_F7 => "f7",
+            VK_F8 => "f8",
+            VK_F9 => "f9",
+            VK_F10 => "f10",
+            VK_F11 => "f11",
+            VK_F12 => "f12",
+            VK_F13 => "f13",
+            VK_F14 => "f14",
+            VK_F15 => "f15",
+            VK_F16 => "f16",
+            VK_F17 => "f17",
+            VK_F18 => "f18",
+            VK_F19 => "f19",
+            VK_F20 => "f20",
+            VK_F21 => "f21",
+            VK_F22 => "f22",
+            VK_F23 => "f23",
+            VK_F24 => "f24",
+            VK_NUMPAD0 => "numpad0",
+            VK_NUMPAD1 => "numpad1",
+            VK_NUMPAD2 => "numpad2",
+            VK_NUMPAD3 => "numpad3",
+            VK_NUMPAD4 => "numpad4",
+            VK_NUMPAD5 => "numpad5",
+            VK_NUMPAD6 => "numpad6",
+            VK_NUMPAD7 => "numpad7",
+            VK_NUMPAD8 => "numpad8",
+            VK_NUMPAD9 => "numpad9",
+            VK_ADD => "numpad_add",
+            VK_DECIMAL => "numpad_decimal",
+            VK_DIVIDE => "numpad_divide",
+            VK_MULTIPLY => "numpad_multiply",
+            VK_SUBTRACT => "numpad_subtract",
+            VK_OEM_1 => "semicolon",
+            VK_OEM_2 => "slash",
+            VK_OEM_3 => "grave",
+            VK_OEM_4 => "left_bracket",
+            VK_OEM_5 => "backslash",
+            VK_OEM_6 => "right_bracket",
+            VK_OEM_7 => "quote",
+            VK_OEM_102 => "intl_backslash",
+            VK_OEM_COMMA => "comma",
+            VK_OEM_MINUS => "minus",
+            VK_OEM_PERIOD => "period",
+            VK_OEM_PLUS => "equal",
             0x30..=0x39 | 0x41..=0x5A => {
                 return char::from_u32(vk_code as u32).map(|ch| ch.to_string());
             }
@@ -425,6 +543,15 @@ pub mod windows {
             assert_eq!(normalize_point(-1920, -100, bounds), (0, 0));
             assert_eq!(normalize_point(-1, 540, bounds), (1919, 640));
             assert_eq!(normalize_point(4000, 2000, bounds), (3839, 1179));
+        }
+
+        #[test]
+        fn maps_extended_windows_keys() {
+            assert_eq!(key_name(VK_LSHIFT as u32).as_deref(), Some("shift"));
+            assert_eq!(key_name(VK_RSHIFT as u32).as_deref(), Some("shift"));
+            assert_eq!(key_name(VK_LWIN as u32).as_deref(), Some("meta"));
+            assert_eq!(key_name(VK_OEM_PLUS as u32).as_deref(), Some("equal"));
+            assert_eq!(key_name(VK_ADD as u32).as_deref(), Some("numpad_add"));
         }
     }
 }

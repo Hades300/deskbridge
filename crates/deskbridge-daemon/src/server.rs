@@ -123,6 +123,7 @@ fn server_log_snapshot(log: &ServerDebugLog) -> Vec<String> {
 
 pub async fn run(options: ServerOptions) -> Result<()> {
     let options = apply_platform_layout(options);
+    crate::capture::set_local_input_suppressed(false);
     let listener = TcpListener::bind(options.listen)
         .await
         .with_context(|| format!("failed to bind {}", options.listen))?;
@@ -417,6 +418,7 @@ async fn handle_client(
     )
     .await;
     remove_current_session(&sessions, &session_key, session_id).await;
+    crate::capture::set_local_input_suppressed(false);
     match &result {
         Ok(()) => push_server_log(
             &server_log,
@@ -488,6 +490,12 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     let probe_id = capture_probe_id(&event);
                     let capture_event = capture_event_payload(event);
                     let routed = route_capture_event(&mut demo_router, capture_event, client_name);
+                    if probe_id.is_none() {
+                        let suppress_local_input = demo_router
+                            .as_ref()
+                            .is_some_and(|router| router.active_screen() != options.name);
+                        crate::capture::set_local_input_suppressed(suppress_local_input);
+                    }
 
                     if probe_id.is_none()
                         && let Some(capture_log_line) = capture_log_line
