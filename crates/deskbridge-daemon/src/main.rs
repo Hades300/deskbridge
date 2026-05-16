@@ -2,6 +2,7 @@ mod capture;
 mod client;
 mod diag;
 mod input;
+mod permissions;
 mod server;
 
 use anyhow::Result;
@@ -60,6 +61,11 @@ enum Command {
         server: Option<SocketAddr>,
         #[arg(long, default_value = "mac")]
         name: String,
+    },
+    /// Check platform permissions required by the local DeskBridge process.
+    Permissions {
+        #[arg(long, default_value_t = false)]
+        prompt: bool,
     },
     /// Create a default JSON config file.
     InitConfig {
@@ -168,6 +174,7 @@ async fn main() -> Result<()> {
                 .unwrap_or(name);
             diag::run(server, name).await
         }
+        Command::Permissions { prompt } => permissions::run(prompt),
         Command::InitConfig { path } => {
             DeskBridgeConfig::default().save(&path)?;
             println!("wrote {}", path.display());

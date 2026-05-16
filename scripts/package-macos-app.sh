@@ -12,7 +12,7 @@ RESOURCES="$CONTENTS/Resources"
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES"
 cp "$ROOT/apps/macos/.build/debug/DeskBridgeMac" "$MACOS/DeskBridgeMac"
-cp "$ROOT/target/debug/deskbridge" "$RESOURCES/deskbridge"
+cp "$ROOT/target/debug/deskbridge" "$MACOS/deskbridge"
 
 /usr/bin/python3 - <<PY
 from pathlib import Path
@@ -44,6 +44,6 @@ plist = """<?xml version="1.0" encoding="UTF-8"?>
 Path("$CONTENTS/Info.plist").write_text(plist)
 PY
 
-codesign --force --deep --sign - "$APP"
+codesign --force --sign - --identifier dev.deskbridge.helper "$MACOS/deskbridge"
+codesign --force --sign - "$APP"
 echo "$APP"
-

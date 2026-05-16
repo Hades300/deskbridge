@@ -29,7 +29,21 @@ open build/DeskBridge.app
 
 ## Permissions
 
-Input injection requires macOS Accessibility permission. For development, grant permission to the launched app or the `deskbridge` binary that performs injection.
+Input injection requires macOS Accessibility permission. The visible app launches
+the bundled helper at `DeskBridge.app/Contents/MacOS/deskbridge`; that helper is
+the process that posts keyboard and mouse events. The app checks this permission
+before starting the client and stops reconnecting if it is missing, so macOS does
+not show repeated permission prompts.
+
+Manual check:
+
+```bash
+/Applications/DeskBridge.app/Contents/MacOS/deskbridge permissions --prompt
+```
+
+If permission was granted to an older build path, remove the stale DeskBridge or
+deskbridge entries from System Settings, then grant the current helper when this
+command prompts.
 
 The product should provide a first-run health panel that checks:
 

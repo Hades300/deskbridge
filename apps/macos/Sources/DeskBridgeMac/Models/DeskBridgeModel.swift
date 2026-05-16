@@ -37,6 +37,13 @@ final class DeskBridgeModel: ObservableObject {
             return override
         }
 
+        let bundledExecutable = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/MacOS/deskbridge")
+            .path
+        if FileManager.default.isExecutableFile(atPath: bundledExecutable) {
+            return bundledExecutable
+        }
+
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("deskbridge").path,
            FileManager.default.isExecutableFile(atPath: bundled) {
             return bundled
@@ -112,6 +119,14 @@ final class DeskBridgeModel: ObservableObject {
     private func launchClient() {
         stopClientProcess()
 
+        guard ensureAccessibilityPermission() else {
+            shouldStayConnected = false
+            restartScheduled = false
+            connected = false
+            status = "Accessibility required"
+            return
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = [
@@ -148,6 +163,28 @@ final class DeskBridgeModel: ObservableObject {
             lastDiagnostics = error.localizedDescription
             scheduleRestartIfNeeded()
         }
+    }
+
+    private func ensureAccessibilityPermission() -> Bool {
+        let output = runDeskBridgeProcess(
+            binary: binaryPath,
+            arguments: ["permissions", "--prompt"]
+        )
+
+        if output.localizedCaseInsensitiveContains("accessibility: ok") {
+            return true
+        }
+
+        lastDiagnostics = """
+        Accessibility permission is required before DeskBridge can inject keyboard and mouse input.
+
+        macOS grants this to the actual helper process, not just the visible app window.
+
+        \(output)
+
+        After granting permission in System Settings, click Connect again.
+        """
+        return false
     }
 
     private func consumeLog(_ text: String) {
