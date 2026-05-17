@@ -119,7 +119,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private Brush _statusBrush = WarningBrush;
     private string _diagnostics = "No diagnostics yet.";
     private bool _captureInput = true;
-    private bool _debugLogging = true;
+    private bool _debugLogging;
     private bool _reverseScroll;
     private double _remoteScrollScale = DefaultRemoteScrollScale;
     private bool _clipboardEnabled = true;

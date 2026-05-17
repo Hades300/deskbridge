@@ -495,6 +495,15 @@ pub async fn run(options: ServerOptions) -> Result<()> {
             crate::build_info::platform()
         ),
     );
+    if options.debug_capture_log {
+        warn!(
+            "debug capture logging is enabled; high-frequency pointer logging may reduce smoothness"
+        );
+        push_server_log(
+            &server_log,
+            "warning: debug_capture_log is enabled; high-frequency pointer logging may reduce smoothness",
+        );
+    }
     let shared = ServerShared {
         capture_tx,
         sessions,

@@ -71,7 +71,7 @@ final class DeskBridgeModel: ObservableObject {
         peerScreenName = defaults.string(forKey: "peerScreenName") ?? "windows"
         autoReconnect = defaults.object(forKey: "autoReconnect") as? Bool ?? true
         captureInput = defaults.object(forKey: "captureInput") as? Bool ?? true
-        debugLogging = defaults.object(forKey: "debugLogging") as? Bool ?? true
+        debugLogging = defaults.object(forKey: "debugLogging") as? Bool ?? false
         reverseScroll = defaults.object(forKey: "reverseScroll") as? Bool ?? false
         remoteScrollScale = Self.normalizeRemoteScrollScale(defaults.object(forKey: "remoteScrollScale") as? Double ?? 1.0)
         clipboardEnabled = defaults.object(forKey: "clipboardEnabled") as? Bool ?? true

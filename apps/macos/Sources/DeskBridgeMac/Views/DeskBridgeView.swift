@@ -230,7 +230,7 @@ struct DeskBridgeView: View {
                             HStack(spacing: 18) {
                                 Toggle("Keyboard and mouse", isOn: $model.captureInput)
                                     .toggleStyle(.checkbox)
-                                Toggle("Route history", isOn: $model.debugLogging)
+                                Toggle("Capture debug log", isOn: $model.debugLogging)
                                     .toggleStyle(.checkbox)
                             }
                             .onChange(of: model.captureInput) { _, _ in model.save() }
