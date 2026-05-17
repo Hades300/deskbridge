@@ -571,7 +571,7 @@ pub mod windows {
         let mut remainder = VERTICAL_WHEEL_REMAINDER
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        wheel_notches_from_delta(&mut *remainder, delta)
+        wheel_notches_from_delta(&mut remainder, delta)
     }
 
     fn wheel_notches_from_delta(remainder: &mut i32, delta: i32) -> i32 {
