@@ -1,11 +1,16 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use deskbridge_core::{Button, InputEvent, InputPacket, KeyState, Size};
+use std::collections::HashSet;
 use tracing::{info, warn};
 
 #[async_trait]
 pub trait InputSink: Send {
     async fn apply(&mut self, packet: &InputPacket) -> Result<()>;
+
+    async fn release_all(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub struct LogSink;
@@ -22,6 +27,7 @@ pub struct EnigoSink {
     enigo: enigo::Enigo,
     cursor_pos: Option<(i32, i32)>,
     pressed_buttons: PressedButtons,
+    pressed_keys: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +51,7 @@ impl EnigoSink {
             enigo,
             cursor_pos: None,
             pressed_buttons: PressedButtons::default(),
+            pressed_keys: HashSet::new(),
         })
     }
 
@@ -134,11 +141,35 @@ impl InputSink for EnigoSink {
                 self.enigo
                     .key(mapped, map_direction(*state))
                     .map_err(|err| anyhow!("key event failed: {err}"))?;
+                apply_pressed_key(&mut self.pressed_keys, key, *state);
             }
             InputEvent::Text { text } => self
                 .enigo
                 .text(text)
                 .map_err(|err| anyhow!("text input failed: {err}"))?,
+        }
+
+        Ok(())
+    }
+
+    async fn release_all(&mut self) -> Result<()> {
+        use enigo::{Direction, Keyboard, Mouse};
+
+        for button in self.pressed_buttons.release_buttons() {
+            if let Err(err) = self.enigo.button(map_button(button), Direction::Release) {
+                warn!(button = ?button, error = %err, "failed to release stuck mouse button");
+            }
+        }
+
+        let mut keys = self.pressed_keys.drain().collect::<Vec<_>>();
+        keys.sort();
+        for key in keys {
+            let Some(mapped) = map_key(&key) else {
+                continue;
+            };
+            if let Err(err) = self.enigo.key(mapped, Direction::Release) {
+                warn!(key, error = %err, "failed to release stuck key");
+            }
         }
 
         Ok(())
@@ -165,6 +196,32 @@ impl PressedButtons {
 
     fn has_primary_drag(&self) -> bool {
         self.left || self.right
+    }
+
+    fn release_buttons(&mut self) -> Vec<Button> {
+        let mut buttons = Vec::new();
+        if self.left {
+            buttons.push(Button::Left);
+            self.left = false;
+        }
+        if self.right {
+            buttons.push(Button::Right);
+            self.right = false;
+        }
+        buttons
+    }
+}
+
+fn apply_pressed_key(pressed_keys: &mut HashSet<String>, key: &str, state: KeyState) {
+    let key = key.trim().to_ascii_lowercase();
+    match state {
+        KeyState::Pressed => {
+            pressed_keys.insert(key);
+        }
+        KeyState::Released => {
+            pressed_keys.remove(&key);
+        }
+        KeyState::Clicked => {}
     }
 }
 
@@ -824,6 +881,18 @@ mod tests {
 
         buttons.apply(Button::Left, KeyState::Clicked);
         assert!(!buttons.has_primary_drag());
+    }
+
+    #[test]
+    fn tracks_pressed_keys_for_session_cleanup() {
+        let mut keys = HashSet::new();
+        apply_pressed_key(&mut keys, "Alt", KeyState::Pressed);
+        apply_pressed_key(&mut keys, "a", KeyState::Clicked);
+        assert!(keys.contains("alt"));
+        assert!(!keys.contains("a"));
+
+        apply_pressed_key(&mut keys, "alt", KeyState::Released);
+        assert!(keys.is_empty());
     }
 
     #[cfg(target_os = "macos")]

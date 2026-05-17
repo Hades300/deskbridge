@@ -127,7 +127,8 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
             .push("clipboard disabled: server did not negotiate clipboard protocol".to_string());
     }
 
-    loop {
+    let session_result: Result<ClientSessionOutcome> = async {
+        loop {
         tokio::select! {
             _ = ticker.tick() => {
                 seq += 1;
@@ -141,10 +142,10 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
             _ = stale_check.tick() => {
                 let silent_for = last_rx.elapsed();
                 if silent_for > stale_after {
-                    return Err(anyhow!(
+                    anyhow::bail!(
                         "server heartbeat stale: no inbound frame for {}ms; reconnecting",
                         silent_for.as_millis()
-                    ));
+                    );
                 }
             }
             packet = recv_clipboard(&mut clipboard_rx), if clipboard_rx.is_some() => {
@@ -186,7 +187,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                         received_events += 1;
                         debug_state.record_input(&packet.event, apply_duration_us, applied_at_ms);
                         if options.max_events.is_some_and(|max_events| received_events >= max_events) {
-                            return Ok(ClientSessionOutcome::Ended);
+                            break Ok(ClientSessionOutcome::Ended);
                         }
                     }
                     Message::Clipboard(packet) => {
@@ -210,15 +211,22 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                     }
                     Message::Goodbye { reason } => {
                         if reason == REPLACED_SESSION_REASON {
-                            return Ok(ClientSessionOutcome::Replaced);
+                            break Ok(ClientSessionOutcome::Replaced);
                         }
-                        return Err(anyhow!("server closed session: {reason}"));
+                        break Err(anyhow!("server closed session: {reason}"));
                     }
                     other => debug!(message = ?other, "ignored message"),
                 }
             }
         }
     }
+    }.await;
+
+    if let Err(err) = sink.release_all().await {
+        warn!(error = %err, "failed to release pressed inputs after client session");
+    }
+
+    session_result
 }
 
 async fn recv_clipboard(

@@ -1,10 +1,10 @@
 use crate::capture::CaptureEvent;
 use anyhow::{Context, Result};
 use deskbridge_core::{
-    CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
-    DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello, InputEvent, InputPacket,
-    InputRouter, Layout, Message, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome,
-    normalize_remote_scroll_scale, read_frame, write_frame,
+    Button, CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket,
+    DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello,
+    InputEvent, InputPacket, InputRouter, KeyState, Layout, Message, REPLACED_SESSION_REASON, Size,
+    Status, StatusKind, Welcome, normalize_remote_scroll_scale, read_frame, write_frame,
 };
 use std::{
     collections::HashMap,
@@ -434,6 +434,7 @@ struct ClientSessionRuntime<'a> {
 #[derive(Debug, Default)]
 struct RoutedCapture {
     event: Option<InputEvent>,
+    released_to_local: bool,
 }
 
 fn new_server_debug_log() -> ServerDebugLog {
@@ -845,6 +846,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut perf = ServerPerfMetrics::new();
     let mut last_unrouted_capture_log_ms = 0_u128;
     let mut scroll_accumulator = ScrollScaleAccumulator::default();
+    let mut remote_input_state = RemoteInputState::default();
     let mut clipboard_options = options.clipboard.clone();
     if !client_clipboard_supported {
         clipboard_options.enabled = false;
@@ -871,7 +873,14 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     &mut scroll_accumulator,
                 );
                 demo_stage += 1;
-                write_input_packet(&mut writer, seq, event, &mut perf).await?;
+                write_tracked_input_packet(
+                    &mut writer,
+                    &mut seq,
+                    event,
+                    &mut perf,
+                    &mut remote_input_state,
+                )
+                .await?;
             }
             event = capture_rx.recv() => {
                 if let Ok(event) = event {
@@ -940,14 +949,20 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     }
 
                     if let Some(event) = routed.event {
-                        seq += 1;
                         let event = transform_routed_input_event(
                             event,
                             runtime_settings.reverse_scroll(),
                             runtime_settings.remote_scroll_scale(),
                             &mut scroll_accumulator,
                         );
-                        write_input_packet(&mut writer, seq, event, &mut perf).await?;
+                        write_tracked_input_packet(
+                            &mut writer,
+                            &mut seq,
+                            event,
+                            &mut perf,
+                            &mut remote_input_state,
+                        )
+                        .await?;
                         if let Some(request_id) = probe_id
                             && let Some(probe) = pending_capture_probes.get_mut(&request_id)
                         {
@@ -956,6 +971,22 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             probe.routed_events += 1;
                         }
                     } else {
+                        if routed.released_to_local {
+                            let release_count = write_remote_release_events(
+                                &mut writer,
+                                &mut seq,
+                                &mut perf,
+                                &mut remote_input_state,
+                            )
+                            .await?;
+                            log_remote_release(
+                                &server_log,
+                                release_count,
+                                session_id,
+                                peer,
+                                client_name,
+                            );
+                        }
                         perf.record_route_miss();
                     }
 
@@ -1043,14 +1074,20 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         };
                         let mut seqs = HashSet::new();
                         for event in events {
-                            seq += 1;
                             let event = transform_routed_input_event(
                                 event,
                                 runtime_settings.reverse_scroll(),
                                 runtime_settings.remote_scroll_scale(),
                                 &mut scroll_accumulator,
                             );
-                            write_input_packet(&mut writer, seq, event, &mut perf).await?;
+                            write_tracked_input_packet(
+                                &mut writer,
+                                &mut seq,
+                                event,
+                                &mut perf,
+                                &mut remote_input_state,
+                            )
+                            .await?;
                             route_probe_seq_index.insert(seq, route_debug.request_id);
                             seqs.insert(seq);
                         }
@@ -1123,6 +1160,20 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             client_name,
                         );
                         if reset_route || demo_router.is_none() {
+                            let release_count = write_remote_release_events(
+                                &mut writer,
+                                &mut seq,
+                                &mut perf,
+                                &mut remote_input_state,
+                            )
+                            .await?;
+                            log_remote_release(
+                                &server_log,
+                                release_count,
+                                session_id,
+                                peer,
+                                client_name,
+                            );
                             demo_router = InputRouter::new(route_layout.clone(), options.name.clone()).ok();
                             crate::capture::set_local_input_suppressed(false);
                         }
@@ -1420,6 +1471,60 @@ where
     let sent_at_ms = deskbridge_core::now_ms();
     perf.record_sent(seq, kind, sent_at_ms, started.elapsed().as_micros());
     Ok(())
+}
+
+async fn write_tracked_input_packet<W>(
+    writer: &mut W,
+    seq: &mut u64,
+    event: InputEvent,
+    perf: &mut ServerPerfMetrics,
+    remote_input_state: &mut RemoteInputState,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    remote_input_state.observe(&event);
+    *seq += 1;
+    write_input_packet(writer, *seq, event, perf).await
+}
+
+async fn write_remote_release_events<W>(
+    writer: &mut W,
+    seq: &mut u64,
+    perf: &mut ServerPerfMetrics,
+    remote_input_state: &mut RemoteInputState,
+) -> Result<usize>
+where
+    W: AsyncWrite + Unpin,
+{
+    let release_events = remote_input_state.release_events();
+    if release_events.is_empty() {
+        return Ok(0);
+    }
+
+    let release_count = release_events.len();
+    for event in release_events {
+        write_tracked_input_packet(writer, seq, event, perf, remote_input_state).await?;
+    }
+    Ok(release_count)
+}
+
+fn log_remote_release(
+    server_log: &ServerDebugLog,
+    release_count: usize,
+    session_id: Uuid,
+    peer: SocketAddr,
+    client_name: &str,
+) {
+    if release_count == 0 {
+        return;
+    }
+    push_server_log(
+        server_log,
+        format!(
+            "released {release_count} remote pressed inputs screen={client_name} peer={peer} session={session_id}"
+        ),
+    );
 }
 
 fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
@@ -2188,11 +2293,18 @@ fn route_capture_event_for_client(
         }
     };
 
+    let released_to_local = outcome
+        .portal
+        .as_ref()
+        .is_some_and(|portal| portal.source_screen == client_name && outcome.input.is_none());
     let event = outcome
         .input
         .and_then(|routed| (routed.target_screen == client_name).then_some(routed.event));
 
-    RoutedCapture { event }
+    RoutedCapture {
+        event,
+        released_to_local,
+    }
 }
 
 fn transform_routed_input_event(
@@ -2248,6 +2360,71 @@ fn scale_wheel_axis(value: i32, remote_scroll_scale: f64, remainder: &mut f64) -
     }
 
     output
+}
+
+#[derive(Debug, Default)]
+struct RemoteInputState {
+    pressed_keys: HashSet<String>,
+    pressed_buttons: Vec<Button>,
+}
+
+impl RemoteInputState {
+    fn observe(&mut self, event: &InputEvent) {
+        match event {
+            InputEvent::Key { key, state } => {
+                let key = remote_key_id(key);
+                match state {
+                    KeyState::Pressed => {
+                        self.pressed_keys.insert(key);
+                    }
+                    KeyState::Released => {
+                        self.pressed_keys.remove(&key);
+                    }
+                    KeyState::Clicked => {}
+                }
+            }
+            InputEvent::MouseButton { button, state } => match state {
+                KeyState::Pressed => {
+                    if !self.pressed_buttons.contains(button) {
+                        self.pressed_buttons.push(*button);
+                    }
+                }
+                KeyState::Released => {
+                    self.pressed_buttons.retain(|pressed| pressed != button);
+                }
+                KeyState::Clicked => {}
+            },
+            InputEvent::MouseMove { .. }
+            | InputEvent::MouseAbs { .. }
+            | InputEvent::Wheel { .. }
+            | InputEvent::Text { .. } => {}
+        }
+    }
+
+    fn release_events(&mut self) -> Vec<InputEvent> {
+        let mut events = Vec::new();
+        for button in self.pressed_buttons.drain(..) {
+            events.push(InputEvent::MouseButton {
+                button,
+                state: KeyState::Released,
+            });
+        }
+
+        let mut keys = self.pressed_keys.drain().collect::<Vec<_>>();
+        keys.sort();
+        for key in keys {
+            events.push(InputEvent::Key {
+                key,
+                state: KeyState::Released,
+            });
+        }
+
+        events
+    }
+}
+
+fn remote_key_id(key: &str) -> String {
+    key.trim().to_ascii_lowercase()
 }
 
 fn describe_input_event(event: &InputEvent) -> String {
@@ -2515,6 +2692,72 @@ mod tests {
             &mut accumulator,
         );
         assert_eq!(mouse, InputEvent::MouseMove { dx: 8, dy: -8 });
+    }
+
+    #[test]
+    fn route_capture_marks_return_to_local_for_remote_release() {
+        let options = test_options("127.0.0.1:0".parse().unwrap());
+        let mut router = Some(InputRouter::new(options.layout, "windows").unwrap());
+
+        let enter = route_capture_event_for_client(
+            &mut router,
+            CaptureEvent::LocalPointer { x: 1919, y: 540 },
+            "mac",
+        );
+        assert!(enter.event.is_some());
+        assert!(!enter.released_to_local);
+
+        let key = route_capture_event_for_client(
+            &mut router,
+            CaptureEvent::Input(InputEvent::Key {
+                key: "alt".to_string(),
+                state: KeyState::Pressed,
+            }),
+            "mac",
+        );
+        assert_eq!(
+            key.event,
+            Some(InputEvent::Key {
+                key: "alt".to_string(),
+                state: KeyState::Pressed,
+            })
+        );
+
+        let returned = route_capture_event_for_client(
+            &mut router,
+            CaptureEvent::Input(InputEvent::MouseMove { dx: -10, dy: 0 }),
+            "mac",
+        );
+        assert_eq!(returned.event, None);
+        assert!(returned.released_to_local);
+    }
+
+    #[test]
+    fn remote_input_state_releases_pressed_keys_and_buttons() {
+        let mut state = RemoteInputState::default();
+        state.observe(&InputEvent::Key {
+            key: "Alt".to_string(),
+            state: KeyState::Pressed,
+        });
+        state.observe(&InputEvent::MouseButton {
+            button: Button::Left,
+            state: KeyState::Pressed,
+        });
+
+        assert_eq!(
+            state.release_events(),
+            vec![
+                InputEvent::MouseButton {
+                    button: Button::Left,
+                    state: KeyState::Released,
+                },
+                InputEvent::Key {
+                    key: "alt".to_string(),
+                    state: KeyState::Released,
+                },
+            ]
+        );
+        assert!(state.release_events().is_empty());
     }
 
     #[tokio::test]
