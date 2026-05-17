@@ -84,6 +84,8 @@ pub mod windows {
     static DPI_AWARENESS_CONFIGURED: OnceLock<()> = OnceLock::new();
     static SUPPRESS_LOCAL_INPUT: AtomicBool = AtomicBool::new(false);
     static LOCAL_CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
+    static VERTICAL_WHEEL_REMAINDER: Mutex<i32> = Mutex::new(0);
+    const WINDOWS_WHEEL_DELTA: i32 = 120;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ScreenBounds {
@@ -554,10 +556,29 @@ pub mod windows {
             WM_MBUTTONUP => vec![mouse_button(Button::Middle, KeyState::Released)],
             WM_MOUSEWHEEL => {
                 let delta = ((hook.mouseData >> 16) as i16) as i32;
-                vec![CaptureEvent::Input(InputEvent::Wheel { dx: 0, dy: delta })]
+                let dy = vertical_wheel_notches(delta);
+                if dy == 0 {
+                    Vec::new()
+                } else {
+                    vec![CaptureEvent::Input(InputEvent::Wheel { dx: 0, dy })]
+                }
             }
             _ => Vec::new(),
         }
+    }
+
+    fn vertical_wheel_notches(delta: i32) -> i32 {
+        let mut remainder = VERTICAL_WHEEL_REMAINDER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        wheel_notches_from_delta(&mut *remainder, delta)
+    }
+
+    fn wheel_notches_from_delta(remainder: &mut i32, delta: i32) -> i32 {
+        *remainder = remainder.saturating_add(delta);
+        let notches = *remainder / WINDOWS_WHEEL_DELTA;
+        *remainder %= WINDOWS_WHEEL_DELTA;
+        notches
     }
 
     unsafe fn keyboard_event_from_hook(wparam: WPARAM, lparam: LPARAM) -> Option<CaptureEvent> {
@@ -711,6 +732,31 @@ pub mod windows {
                 describe_bounds(bounds),
                 "origin=(10, 20) size=1920x1080 max=(1929, 1099)"
             );
+        }
+
+        #[test]
+        fn normalizes_windows_wheel_delta_to_logical_notches() {
+            let mut remainder = 0;
+            assert_eq!(wheel_notches_from_delta(&mut remainder, 120), 1);
+            assert_eq!(remainder, 0);
+
+            assert_eq!(wheel_notches_from_delta(&mut remainder, -240), -2);
+            assert_eq!(remainder, 0);
+        }
+
+        #[test]
+        fn accumulates_partial_windows_wheel_delta() {
+            let mut remainder = 0;
+            assert_eq!(wheel_notches_from_delta(&mut remainder, 30), 0);
+            assert_eq!(remainder, 30);
+            assert_eq!(wheel_notches_from_delta(&mut remainder, 30), 0);
+            assert_eq!(wheel_notches_from_delta(&mut remainder, 60), 1);
+            assert_eq!(remainder, 0);
+
+            assert_eq!(wheel_notches_from_delta(&mut remainder, -60), 0);
+            assert_eq!(remainder, -60);
+            assert_eq!(wheel_notches_from_delta(&mut remainder, -60), -1);
+            assert_eq!(remainder, 0);
         }
 
         #[test]

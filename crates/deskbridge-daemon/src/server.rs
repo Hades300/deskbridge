@@ -844,6 +844,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let mut capture_probe_seq_index = HashMap::<u64, Uuid>::new();
     let mut perf = ServerPerfMetrics::new();
     let mut last_unrouted_capture_log_ms = 0_u128;
+    let mut scroll_accumulator = ScrollScaleAccumulator::default();
     let mut clipboard_options = options.clipboard.clone();
     if !client_clipboard_supported {
         clipboard_options.enabled = false;
@@ -867,6 +868,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     ),
                     runtime_settings.reverse_scroll(),
                     runtime_settings.remote_scroll_scale(),
+                    &mut scroll_accumulator,
                 );
                 demo_stage += 1;
                 write_input_packet(&mut writer, seq, event, &mut perf).await?;
@@ -943,6 +945,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             event,
                             runtime_settings.reverse_scroll(),
                             runtime_settings.remote_scroll_scale(),
+                            &mut scroll_accumulator,
                         );
                         write_input_packet(&mut writer, seq, event, &mut perf).await?;
                         if let Some(request_id) = probe_id
@@ -1045,6 +1048,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                                 event,
                                 runtime_settings.reverse_scroll(),
                                 runtime_settings.remote_scroll_scale(),
+                                &mut scroll_accumulator,
                             );
                             write_input_packet(&mut writer, seq, event, &mut perf).await?;
                             route_probe_seq_index.insert(seq, route_debug.request_id);
@@ -2195,10 +2199,11 @@ fn transform_routed_input_event(
     mut event: InputEvent,
     reverse_scroll: bool,
     remote_scroll_scale: f64,
+    scroll_accumulator: &mut ScrollScaleAccumulator,
 ) -> InputEvent {
     if let InputEvent::Wheel { dx, dy } = &mut event {
-        let scaled_dx = scale_wheel_axis(*dx, remote_scroll_scale);
-        let scaled_dy = scale_wheel_axis(*dy, remote_scroll_scale);
+        let scaled_dx = scroll_accumulator.scale_x(*dx, remote_scroll_scale);
+        let scaled_dy = scroll_accumulator.scale_y(*dy, remote_scroll_scale);
         *dx = if reverse_scroll {
             scaled_dx.saturating_neg()
         } else {
@@ -2213,17 +2218,36 @@ fn transform_routed_input_event(
     event
 }
 
-fn scale_wheel_axis(value: i32, remote_scroll_scale: f64) -> i32 {
+#[derive(Debug, Default)]
+struct ScrollScaleAccumulator {
+    x: f64,
+    y: f64,
+}
+
+impl ScrollScaleAccumulator {
+    fn scale_x(&mut self, value: i32, remote_scroll_scale: f64) -> i32 {
+        scale_wheel_axis(value, remote_scroll_scale, &mut self.x)
+    }
+
+    fn scale_y(&mut self, value: i32, remote_scroll_scale: f64) -> i32 {
+        scale_wheel_axis(value, remote_scroll_scale, &mut self.y)
+    }
+}
+
+fn scale_wheel_axis(value: i32, remote_scroll_scale: f64, remainder: &mut f64) -> i32 {
     if value == 0 {
         return 0;
     }
 
-    let scaled = (value as f64 * normalize_remote_scroll_scale(remote_scroll_scale)).round();
-    if scaled.abs() < f64::EPSILON {
-        return value.signum();
+    let scaled = value as f64 * normalize_remote_scroll_scale(remote_scroll_scale) + *remainder;
+    let output = scaled.trunc().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    *remainder = scaled - output as f64;
+
+    if output == i32::MIN || output == i32::MAX {
+        *remainder = 0.0;
     }
 
-    scaled.clamp(i32::MIN as f64, i32::MAX as f64) as i32
+    output
 }
 
 fn describe_input_event(event: &InputEvent) -> String {
@@ -2450,14 +2474,46 @@ mod tests {
 
     #[test]
     fn transform_routed_input_event_scales_remote_wheel() {
-        let event = transform_routed_input_event(InputEvent::Wheel { dx: 8, dy: -120 }, false, 0.5);
+        let mut accumulator = ScrollScaleAccumulator::default();
+        let event = transform_routed_input_event(
+            InputEvent::Wheel { dx: 8, dy: -120 },
+            false,
+            0.5,
+            &mut accumulator,
+        );
         assert_eq!(event, InputEvent::Wheel { dx: 4, dy: -60 });
 
-        let reversed = transform_routed_input_event(InputEvent::Wheel { dx: 1, dy: 1 }, true, 0.25);
+        let mut accumulator = ScrollScaleAccumulator::default();
+        let first = transform_routed_input_event(
+            InputEvent::Wheel { dx: 1, dy: 1 },
+            false,
+            0.5,
+            &mut accumulator,
+        );
+        let second = transform_routed_input_event(
+            InputEvent::Wheel { dx: 1, dy: 1 },
+            false,
+            0.5,
+            &mut accumulator,
+        );
+        assert_eq!(first, InputEvent::Wheel { dx: 0, dy: 0 });
+        assert_eq!(second, InputEvent::Wheel { dx: 1, dy: 1 });
+
+        let mut accumulator = ScrollScaleAccumulator::default();
+        let reversed = transform_routed_input_event(
+            InputEvent::Wheel { dx: 4, dy: 4 },
+            true,
+            0.25,
+            &mut accumulator,
+        );
         assert_eq!(reversed, InputEvent::Wheel { dx: -1, dy: -1 });
 
-        let mouse =
-            transform_routed_input_event(InputEvent::MouseMove { dx: 8, dy: -8 }, true, 0.5);
+        let mouse = transform_routed_input_event(
+            InputEvent::MouseMove { dx: 8, dy: -8 },
+            true,
+            0.5,
+            &mut accumulator,
+        );
         assert_eq!(mouse, InputEvent::MouseMove { dx: 8, dy: -8 });
     }
 
