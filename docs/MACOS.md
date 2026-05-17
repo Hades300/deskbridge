@@ -30,16 +30,17 @@ open build/DeskBridge.app
 ## Permissions
 
 Input injection requires macOS Accessibility permission. The visible app launches
-the bundled helper at `DeskBridge.app/Contents/MacOS/deskbridge`; that helper is
-the process that posts keyboard and mouse events. The app checks this permission
-before starting the client, opens the Accessibility settings page if it is
-missing, and stops reconnecting so macOS does not show repeated permission
-prompts.
+the bundled helper at
+`DeskBridge.app/Contents/Helpers/DeskBridgeHelper.app/Contents/MacOS/deskbridge`;
+that helper is the process that posts keyboard and mouse events. The app checks
+this permission before starting the client, opens the Accessibility settings page
+if it is missing, and stops reconnecting so macOS does not show repeated
+permission prompts.
 
 Manual check:
 
 ```bash
-/Applications/DeskBridge.app/Contents/MacOS/deskbridge permissions --prompt
+/Applications/DeskBridge.app/Contents/Helpers/DeskBridgeHelper.app/Contents/MacOS/deskbridge permissions --prompt
 ```
 
 If permission was granted to an older build path, remove the stale DeskBridge or

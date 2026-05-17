@@ -1,0 +1,90 @@
+<svg width="1600" height="760" viewBox="0 0 1600 760" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">DeskBridge overview</title>
+  <desc id="desc">A Windows PC sharing keyboard, mouse, and clipboard with a Mac over a local network.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#17181c"/>
+      <stop offset="1" stop-color="#262a31"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="330" y1="382" x2="1270" y2="382" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c7f464"/>
+      <stop offset="0.52" stop-color="#66e3ff"/>
+      <stop offset="1" stop-color="#8ba8ff"/>
+    </linearGradient>
+    <filter id="softShadow" x="-12%" y="-18%" width="124%" height="136%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="11" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.48 0 0 0 0 0.91 0 0 0 0 1 0 0 0 0.82 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="760" rx="44" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1598" height="758" rx="43" stroke="#3a3d45" stroke-width="2"/>
+
+  <g transform="translate(90 76)">
+    <rect x="0" y="0" width="78" height="78" rx="18" fill="#c7f464" fill-opacity="0.15"/>
+    <rect x="18" y="22" width="42" height="30" rx="5" stroke="#c7f464" stroke-width="5"/>
+    <path d="M25 30h5M35 30h5M45 30h5M25 40h5M35 40h5M45 40h5M25 50h25" stroke="#c7f464" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <text x="192" y="128" fill="#f5f7fb" font-family="Inter, SF Pro Display, Segoe UI, Arial, sans-serif" font-size="58" font-weight="760">DeskBridge</text>
+  <text x="194" y="174" fill="#aeb4bf" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="24" font-weight="520">Keyboard, mouse, and clipboard sharing that feels native.</text>
+
+  <g filter="url(#softShadow)">
+    <rect x="104" y="252" width="560" height="312" rx="26" fill="#20242b"/>
+    <rect x="104" y="252" width="560" height="312" rx="26" stroke="#465061" stroke-width="2"/>
+    <rect x="128" y="276" width="512" height="250" rx="18" fill="#101216"/>
+    <rect x="128" y="276" width="512" height="250" rx="18" stroke="#343944" stroke-width="2"/>
+    <rect x="128" y="526" width="512" height="38" rx="0" fill="#2f333b"/>
+    <circle cx="384" cy="546" r="5" fill="#8c95a3"/>
+    <text x="152" y="324" fill="#f5f7fb" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="27" font-weight="700">Windows server</text>
+    <text x="152" y="363" fill="#aeb4bf" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="20">Owns the physical keyboard and mouse</text>
+    <rect x="152" y="404" width="226" height="48" rx="24" fill="#c7f464" fill-opacity="0.16" stroke="#c7f464" stroke-opacity="0.36"/>
+    <circle cx="179" cy="428" r="8" fill="#73e183"/>
+    <text x="198" y="436" fill="#f5f7fb" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="18" font-weight="650">Listening :24800</text>
+    <rect x="152" y="468" width="166" height="32" rx="16" fill="#2c313a"/>
+    <text x="174" y="490" fill="#c7cbd4" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">capture on</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="936" y="226" width="560" height="364" rx="26" fill="#20242b"/>
+    <rect x="936" y="226" width="560" height="364" rx="26" stroke="#465061" stroke-width="2"/>
+    <rect x="964" y="254" width="504" height="286" rx="22" fill="#15181e"/>
+    <rect x="964" y="254" width="504" height="286" rx="22" stroke="#343944" stroke-width="2"/>
+    <rect x="1114" y="560" width="204" height="14" rx="7" fill="#3a404b"/>
+    <text x="1000" y="310" fill="#f5f7fb" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="27" font-weight="700">macOS client</text>
+    <text x="1000" y="349" fill="#aeb4bf" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="20">Receives remote input and clipboard updates</text>
+    <rect x="1000" y="391" width="178" height="48" rx="24" fill="#66e3ff" fill-opacity="0.12" stroke="#66e3ff" stroke-opacity="0.34"/>
+    <circle cx="1027" cy="415" r="8" fill="#73e183"/>
+    <text x="1046" y="423" fill="#f5f7fb" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="18" font-weight="650">Connected</text>
+    <rect x="1000" y="460" width="126" height="32" rx="16" fill="#2c313a"/>
+    <text x="1022" y="482" fill="#c7cbd4" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="16" font-weight="600">clipboard</text>
+  </g>
+
+  <path d="M672 405C775 358 828 357 929 405" stroke="url(#accent)" stroke-width="7" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M910 380L946 407L907 429" stroke="#8ba8ff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="712" y="350" fill="#d8dce5" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="19" font-weight="700">cross the edge</text>
+  <text x="692" y="456" fill="#aeb4bf" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="18">LAN protocol + self-healing reconnect</text>
+
+  <g transform="translate(116 626)">
+    <rect x="0" y="0" width="310" height="52" rx="26" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.08"/>
+    <text x="28" y="34" fill="#e5e9f0" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="17" font-weight="650">Text, images, and files</text>
+  </g>
+  <g transform="translate(452 626)">
+    <rect x="0" y="0" width="286" height="52" rx="26" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.08"/>
+    <text x="28" y="34" fill="#e5e9f0" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="17" font-weight="650">Live diagnostics</text>
+  </g>
+  <g transform="translate(764 626)">
+    <rect x="0" y="0" width="344" height="52" rx="26" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.08"/>
+    <text x="28" y="34" fill="#e5e9f0" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="17" font-weight="650">Native macOS and Windows UI</text>
+  </g>
+  <g transform="translate(1134 626)">
+    <rect x="0" y="0" width="270" height="52" rx="26" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.08"/>
+    <text x="28" y="34" fill="#e5e9f0" font-family="Inter, SF Pro Text, Segoe UI, Arial, sans-serif" font-size="17" font-weight="650">Rust core</text>
+  </g>
+</svg>

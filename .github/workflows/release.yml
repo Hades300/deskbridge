@@ -196,11 +196,20 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < <(find dist -type f | sort)
+          if [[ "$RELEASE_TAG" == *-dev* || "$RELEASE_TAG" == *-alpha* || "$RELEASE_TAG" == *-beta* || "$RELEASE_TAG" == *-rc* ]]; then
+            release_flags=(--prerelease)
+            release_notes="DeskBridge preview release. Use this build to try the latest fixes before the next stable release. macOS uses configured signing when release secrets are present; otherwise it is ad-hoc signed. Windows packages include the daemon and WPF admin app."
+          else
+            release_flags=()
+            release_notes="DeskBridge stable release. macOS uses configured signing when release secrets are present; otherwise it is ad-hoc signed. Windows packages include the daemon and WPF admin app."
+          fi
+
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
           else
             gh release create "$RELEASE_TAG" "${files[@]}" \
               --target "$GITHUB_SHA" \
               --title "$RELEASE_TAG" \
-              --notes "DeskBridge preview release. macOS app uses configured signing when release secrets are present; otherwise it is ad-hoc signed. Windows packages include the daemon and WPF admin app."
+              --notes "$release_notes" \
+              "${release_flags[@]}"
           fi
