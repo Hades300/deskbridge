@@ -189,6 +189,23 @@ struct DeskBridgeView: View {
                         .onChange(of: model.reverseScroll) { _, _ in model.applyRuntimeInputSettings() }
                     }
 
+                    if model.mode == .server {
+                        GridRow {
+                            settingLabel("Wheel", systemImage: "scroll")
+                            HStack(spacing: 10) {
+                                Text("Remote speed")
+                                    .foregroundStyle(.secondary)
+                                Slider(value: $model.remoteScrollScale, in: 0.25...2.0, step: 0.05)
+                                    .frame(width: 150)
+                                Text("\(model.remoteScrollScale, specifier: "%.2f")x")
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 48, alignment: .trailing)
+                            }
+                            .onChange(of: model.remoteScrollScale) { _, _ in model.applyRuntimeInputSettings() }
+                        }
+                    }
+
                     GridRow {
                         settingLabel("Clipboard", systemImage: "doc.on.clipboard")
                         HStack(spacing: 14) {

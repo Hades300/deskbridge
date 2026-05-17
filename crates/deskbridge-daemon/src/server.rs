@@ -4,7 +4,7 @@ use deskbridge_core::{
     CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
     DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello, InputEvent, InputPacket,
     InputRouter, Layout, Message, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome,
-    read_frame, write_frame,
+    normalize_remote_scroll_scale, read_frame, write_frame,
 };
 use std::{
     collections::HashMap,
@@ -37,6 +37,7 @@ pub struct ServerOptions {
     pub capture: bool,
     pub debug_capture_log: bool,
     pub reverse_scroll: bool,
+    pub remote_scroll_scale: f64,
     pub heartbeat_ms: u64,
     pub layout: Layout,
     pub clipboard: ClipboardConfig,
@@ -57,14 +58,20 @@ struct ServerShared {
 #[derive(Debug)]
 struct RuntimeSettings {
     reverse_scroll: AtomicBool,
+    remote_scroll_scale: AtomicU64,
     layout_revision: AtomicU64,
     layout: StdMutex<Layout>,
 }
 
 impl RuntimeSettings {
-    fn new(reverse_scroll: bool, layout: Layout) -> ServerRuntimeSettings {
+    fn new(
+        reverse_scroll: bool,
+        remote_scroll_scale: f64,
+        layout: Layout,
+    ) -> ServerRuntimeSettings {
         Arc::new(Self {
             reverse_scroll: AtomicBool::new(reverse_scroll),
+            remote_scroll_scale: AtomicU64::new(encode_remote_scroll_scale(remote_scroll_scale)),
             layout_revision: AtomicU64::new(1),
             layout: StdMutex::new(layout),
         })
@@ -76,6 +83,19 @@ impl RuntimeSettings {
 
     fn set_reverse_scroll(&self, value: bool) -> bool {
         self.reverse_scroll.swap(value, Ordering::Relaxed)
+    }
+
+    fn remote_scroll_scale(&self) -> f64 {
+        decode_remote_scroll_scale(self.remote_scroll_scale.load(Ordering::Relaxed))
+    }
+
+    fn set_remote_scroll_scale(&self, value: f64) -> (f64, f64) {
+        let encoded = encode_remote_scroll_scale(value);
+        let previous = self.remote_scroll_scale.swap(encoded, Ordering::Relaxed);
+        (
+            decode_remote_scroll_scale(previous),
+            decode_remote_scroll_scale(encoded),
+        )
     }
 
     fn layout(&self) -> Layout {
@@ -96,6 +116,16 @@ impl RuntimeSettings {
     fn layout_revision(&self) -> u64 {
         self.layout_revision.load(Ordering::Relaxed)
     }
+}
+
+const REMOTE_SCROLL_SCALE_UNITS: f64 = 1000.0;
+
+fn encode_remote_scroll_scale(value: f64) -> u64 {
+    (normalize_remote_scroll_scale(value) * REMOTE_SCROLL_SCALE_UNITS).round() as u64
+}
+
+fn decode_remote_scroll_scale(value: u64) -> f64 {
+    normalize_remote_scroll_scale(value as f64 / REMOTE_SCROLL_SCALE_UNITS)
 }
 
 #[derive(Debug)]
@@ -440,7 +470,11 @@ pub async fn run(options: ServerOptions) -> Result<()> {
     let (capture_tx, _) = crate::capture::channel();
     let sessions = SessionRegistry::default();
     let server_log = new_server_debug_log();
-    let runtime_settings = RuntimeSettings::new(options.reverse_scroll, options.layout.clone());
+    let runtime_settings = RuntimeSettings::new(
+        options.reverse_scroll,
+        options.remote_scroll_scale,
+        options.layout.clone(),
+    );
 
     if options.capture {
         start_platform_capture(capture_tx.clone())?;
@@ -450,12 +484,13 @@ pub async fn run(options: ServerOptions) -> Result<()> {
     push_server_log(
         &server_log,
         format!(
-            "server listening listen={} screen={} capture={} debug_capture_log={} reverse_scroll={} version={} platform={}",
+            "server listening listen={} screen={} capture={} debug_capture_log={} reverse_scroll={} remote_scroll_scale={:.2} version={} platform={}",
             options.listen,
             options.name,
             options.capture,
             options.debug_capture_log,
             options.reverse_scroll,
+            normalize_remote_scroll_scale(options.remote_scroll_scale),
             crate::build_info::version(),
             crate::build_info::platform()
         ),
@@ -822,6 +857,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     demo_stage,
                     ),
                     runtime_settings.reverse_scroll(),
+                    runtime_settings.remote_scroll_scale(),
                 );
                 demo_stage += 1;
                 write_input_packet(&mut writer, seq, event, &mut perf).await?;
@@ -894,7 +930,11 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
 
                     if let Some(event) = routed.event {
                         seq += 1;
-                        let event = transform_routed_input_event(event, runtime_settings.reverse_scroll());
+                        let event = transform_routed_input_event(
+                            event,
+                            runtime_settings.reverse_scroll(),
+                            runtime_settings.remote_scroll_scale(),
+                        );
                         write_input_packet(&mut writer, seq, event, &mut perf).await?;
                         if let Some(request_id) = probe_id
                             && let Some(probe) = pending_capture_probes.get_mut(&request_id)
@@ -992,7 +1032,11 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         let mut seqs = HashSet::new();
                         for event in events {
                             seq += 1;
-                            let event = transform_routed_input_event(event, runtime_settings.reverse_scroll());
+                            let event = transform_routed_input_event(
+                                event,
+                                runtime_settings.reverse_scroll(),
+                                runtime_settings.remote_scroll_scale(),
+                            );
                             write_input_packet(&mut writer, seq, event, &mut perf).await?;
                             route_probe_seq_index.insert(seq, route_debug.request_id);
                             seqs.insert(seq);
@@ -1286,12 +1330,14 @@ async fn handle_diagnostic_session(
             }
             DebugCommand::InputSettings {
                 reverse_scroll,
+                remote_scroll_scale,
                 layout,
                 reset_route,
             } => {
                 let mut response = update_runtime_input_settings(
                     request.request_id,
                     reverse_scroll,
+                    remote_scroll_scale,
                     layout.clone(),
                     &runtime_settings,
                     &server_log,
@@ -1409,7 +1455,15 @@ async fn build_server_logs_response(
         "reverse_scroll={}",
         runtime_settings.reverse_scroll()
     ));
+    logs.push(format!(
+        "remote_scroll_scale={:.2}",
+        runtime_settings.remote_scroll_scale()
+    ));
     logs.push(format!("startup_reverse_scroll={}", options.reverse_scroll));
+    logs.push(format!(
+        "startup_remote_scroll_scale={:.2}",
+        normalize_remote_scroll_scale(options.remote_scroll_scale)
+    ));
     logs.push(format!("heartbeat_ms={}", options.heartbeat_ms));
     logs.push(format!(
         "clipboard enabled={} text={} image={} files={} poll_ms={} max_transfer_bytes={}",
@@ -1468,6 +1522,7 @@ async fn build_server_logs_response(
 fn update_runtime_input_settings(
     request_id: Uuid,
     reverse_scroll: Option<bool>,
+    remote_scroll_scale: Option<f64>,
     layout: Option<Layout>,
     runtime_settings: &ServerRuntimeSettings,
     server_log: &ServerDebugLog,
@@ -1483,6 +1538,20 @@ fn update_runtime_input_settings(
         push_server_log(
             server_log,
             format!("runtime input setting updated reverse_scroll={value} previous={previous}"),
+        );
+    }
+
+    if let Some(value) = remote_scroll_scale {
+        let (previous, current) = runtime_settings.set_remote_scroll_scale(value);
+        changed |= (previous - current).abs() >= f64::EPSILON;
+        logs.push(format!(
+            "remote_scroll_scale: {previous:.2} -> {current:.2}"
+        ));
+        push_server_log(
+            server_log,
+            format!(
+                "runtime input setting updated remote_scroll_scale={current:.2} previous={previous:.2}"
+            ),
         );
     }
 
@@ -1513,6 +1582,10 @@ fn update_runtime_input_settings(
     logs.push(format!(
         "reverse_scroll={}",
         runtime_settings.reverse_scroll()
+    ));
+    logs.push(format!(
+        "remote_scroll_scale={:.2}",
+        runtime_settings.remote_scroll_scale()
     ));
 
     DebugResponse {
@@ -1807,11 +1880,12 @@ fn build_route_status_logs(
             options.name
         ),
         format!(
-            "listen={} capture={} demo_events={} reverse_scroll={} heartbeat_ms={}",
+            "listen={} capture={} demo_events={} reverse_scroll={} remote_scroll_scale={:.2} heartbeat_ms={}",
             options.listen,
             options.capture,
             options.demo_events,
             runtime_settings.reverse_scroll(),
+            runtime_settings.remote_scroll_scale(),
             options.heartbeat_ms,
         ),
         format!("layout_revision={}", runtime_settings.layout_revision()),
@@ -2108,12 +2182,39 @@ fn route_capture_event_for_client(
     RoutedCapture { event }
 }
 
-fn transform_routed_input_event(mut event: InputEvent, reverse_scroll: bool) -> InputEvent {
-    if reverse_scroll && let InputEvent::Wheel { dx, dy } = &mut event {
-        *dx = dx.saturating_neg();
-        *dy = dy.saturating_neg();
+fn transform_routed_input_event(
+    mut event: InputEvent,
+    reverse_scroll: bool,
+    remote_scroll_scale: f64,
+) -> InputEvent {
+    if let InputEvent::Wheel { dx, dy } = &mut event {
+        let scaled_dx = scale_wheel_axis(*dx, remote_scroll_scale);
+        let scaled_dy = scale_wheel_axis(*dy, remote_scroll_scale);
+        *dx = if reverse_scroll {
+            scaled_dx.saturating_neg()
+        } else {
+            scaled_dx
+        };
+        *dy = if reverse_scroll {
+            scaled_dy.saturating_neg()
+        } else {
+            scaled_dy
+        };
     }
     event
+}
+
+fn scale_wheel_axis(value: i32, remote_scroll_scale: f64) -> i32 {
+    if value == 0 {
+        return 0;
+    }
+
+    let scaled = (value as f64 * normalize_remote_scroll_scale(remote_scroll_scale)).round();
+    if scaled.abs() < f64::EPSILON {
+        return value.signum();
+    }
+
+    scaled.clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
 fn describe_input_event(event: &InputEvent) -> String {
@@ -2238,8 +2339,8 @@ fn sample_point_on_edge(layout: &Layout, screen_name: &str, edge: Edge) -> Optio
 mod tests {
     use super::*;
     use deskbridge_core::{
-        DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, EventAck, Link, Ping, Screen,
-        Size,
+        DEFAULT_REMOTE_SCROLL_SCALE, DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot,
+        EventAck, Link, Ping, Screen, Size,
     };
 
     fn test_layout() -> Layout {
@@ -2279,6 +2380,7 @@ mod tests {
             capture: false,
             debug_capture_log: false,
             reverse_scroll: false,
+            remote_scroll_scale: DEFAULT_REMOTE_SCROLL_SCALE,
             heartbeat_ms: DEFAULT_HEARTBEAT_MS,
             layout: test_layout(),
             clipboard: ClipboardConfig {
@@ -2289,7 +2391,11 @@ mod tests {
     }
 
     fn test_runtime_settings(options: &ServerOptions) -> ServerRuntimeSettings {
-        RuntimeSettings::new(options.reverse_scroll, options.layout.clone())
+        RuntimeSettings::new(
+            options.reverse_scroll,
+            options.remote_scroll_scale,
+            options.layout.clone(),
+        )
     }
 
     fn test_shared(
@@ -2331,6 +2437,19 @@ mod tests {
         assert!(logs.contains("ack_rtt p50=3ms"));
         assert!(logs.contains("client_apply p50=345us"));
         assert!(logs.contains("server_write p50=12us"));
+    }
+
+    #[test]
+    fn transform_routed_input_event_scales_remote_wheel() {
+        let event = transform_routed_input_event(InputEvent::Wheel { dx: 8, dy: -120 }, false, 0.5);
+        assert_eq!(event, InputEvent::Wheel { dx: 4, dy: -60 });
+
+        let reversed = transform_routed_input_event(InputEvent::Wheel { dx: 1, dy: 1 }, true, 0.25);
+        assert_eq!(reversed, InputEvent::Wheel { dx: -1, dy: -1 });
+
+        let mouse =
+            transform_routed_input_event(InputEvent::MouseMove { dx: 8, dy: -8 }, true, 0.5);
+        assert_eq!(mouse, InputEvent::MouseMove { dx: 8, dy: -8 });
     }
 
     #[tokio::test]
@@ -2950,6 +3069,7 @@ mod tests {
                 request_id,
                 command: DebugCommand::InputSettings {
                     reverse_scroll: Some(true),
+                    remote_scroll_scale: Some(0.5),
                     layout: None,
                     reset_route: None,
                 },
@@ -2969,14 +3089,24 @@ mod tests {
         assert_eq!(response.request_id, request_id);
         assert!(response.ok);
         assert!(runtime_settings.reverse_scroll());
+        assert_eq!(runtime_settings.remote_scroll_scale(), 0.5);
         assert!(
             response
                 .logs
                 .iter()
                 .any(|line| line == "reverse_scroll: false -> true")
         );
+        assert!(
+            response
+                .logs
+                .iter()
+                .any(|line| { line == "remote_scroll_scale: 1.00 -> 0.50" })
+        );
         assert!(server_log_snapshot(&server_log).iter().any(|line| {
             line.contains("runtime input setting updated reverse_scroll=true previous=false")
+        }));
+        assert!(server_log_snapshot(&server_log).iter().any(|line| {
+            line.contains("runtime input setting updated remote_scroll_scale=0.50 previous=1.00")
         }));
     }
 

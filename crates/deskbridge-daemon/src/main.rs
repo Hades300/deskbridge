@@ -13,8 +13,9 @@ use crate::input::InputSink;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use deskbridge_core::{
-    ClipboardConfig, DEFAULT_HEARTBEAT_MS, DebugCommand, DeskBridgeConfig, Edge, InputEvent,
-    InputPacket, InputRouter, Layout, Link, Screen, Size, simulate_route,
+    ClipboardConfig, DEFAULT_HEARTBEAT_MS, DEFAULT_REMOTE_SCROLL_SCALE, DebugCommand,
+    DeskBridgeConfig, Edge, InputEvent, InputPacket, InputRouter, Layout, Link, Screen, Size,
+    normalize_remote_scroll_scale, simulate_route,
 };
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 use tracing_subscriber::EnvFilter;
@@ -68,6 +69,8 @@ enum Command {
         debug_capture_log: bool,
         #[arg(long, default_value_t = false)]
         reverse_scroll: bool,
+        #[arg(long)]
+        remote_scroll_scale: Option<f64>,
     },
     /// Diagnose reachability and protocol handshake.
     Diag {
@@ -181,6 +184,8 @@ enum DebugCliCommand {
     InputSettings {
         #[arg(long, value_parser = clap::value_parser!(bool))]
         reverse_scroll: Option<bool>,
+        #[arg(long)]
+        remote_scroll_scale: Option<f64>,
         #[arg(long, default_value_t = false)]
         apply_config: bool,
     },
@@ -264,6 +269,7 @@ async fn main() -> Result<()> {
             capture,
             debug_capture_log,
             reverse_scroll,
+            remote_scroll_scale,
         } => {
             let config = load_config(config)?;
             let listen = config
@@ -288,6 +294,10 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| default_layout(&name, &allow));
             let reverse_scroll =
                 reverse_scroll || config.as_ref().is_some_and(|cfg| cfg.input.reverse_scroll);
+            let remote_scroll_scale = remote_scroll_scale
+                .or_else(|| config.as_ref().map(|cfg| cfg.input.remote_scroll_scale))
+                .map(normalize_remote_scroll_scale)
+                .unwrap_or(DEFAULT_REMOTE_SCROLL_SCALE);
             let clipboard = config
                 .as_ref()
                 .map(|cfg| cfg.clipboard.clone())
@@ -300,6 +310,7 @@ async fn main() -> Result<()> {
                 capture,
                 debug_capture_log,
                 reverse_scroll,
+                remote_scroll_scale,
                 heartbeat_ms,
                 layout,
                 clipboard,
@@ -458,9 +469,17 @@ fn debug_cli_command(command: DebugCliCommand, config: Option<&DeskBridgeConfig>
         DebugCliCommand::Perf => DebugCommand::Perf,
         DebugCliCommand::InputSettings {
             reverse_scroll,
+            remote_scroll_scale,
             apply_config,
         } => DebugCommand::InputSettings {
             reverse_scroll,
+            remote_scroll_scale: remote_scroll_scale.or_else(|| {
+                if apply_config {
+                    config.map(|cfg| normalize_remote_scroll_scale(cfg.input.remote_scroll_scale))
+                } else {
+                    None
+                }
+            }),
             layout: if apply_config {
                 config.map(|cfg| cfg.layout.clone())
             } else {

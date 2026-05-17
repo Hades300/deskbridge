@@ -178,6 +178,15 @@
               <WrapPanel Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,12,0,0" Visibility="{Binding ServerSettingsVisibility}">
                 <CheckBox Content="Capture keyboard and mouse" IsChecked="{Binding CaptureInput}" Margin="0,0,18,0"/>
                 <CheckBox Content="Reverse remote wheel" IsChecked="{Binding ReverseScroll}" Margin="0,0,18,0"/>
+                <TextBlock Text="Wheel speed" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <Slider Minimum="0.25"
+                        Maximum="2"
+                        TickFrequency="0.05"
+                        Width="120"
+                        VerticalAlignment="Center"
+                        Value="{Binding RemoteScrollScale, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, Delay=120}"
+                        Margin="0,0,8,0"/>
+                <TextBlock Text="{Binding RemoteScrollScaleLabel}" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" Width="44" Margin="0,0,18,0"/>
                 <CheckBox Content="Keep route history" IsChecked="{Binding DebugLogging}"/>
               </WrapPanel>
 

@@ -264,7 +264,7 @@ pub struct ClipboardFile {
     pub data_base64: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DebugCommand {
     DisplayInfo,
@@ -297,6 +297,8 @@ pub enum DebugCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reverse_scroll: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote_scroll_scale: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         layout: Option<Layout>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reset_route: Option<bool>,
@@ -321,7 +323,7 @@ fn default_route_probe_dx() -> i32 {
     80
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DebugRequest {
     pub request_id: Uuid,
     pub command: DebugCommand,
@@ -605,6 +607,7 @@ mod tests {
             request_id: Uuid::new_v4(),
             command: DebugCommand::InputSettings {
                 reverse_scroll: Some(true),
+                remote_scroll_scale: Some(0.75),
                 layout: None,
                 reset_route: None,
             },

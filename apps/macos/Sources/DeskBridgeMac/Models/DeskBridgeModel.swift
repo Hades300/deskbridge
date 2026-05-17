@@ -37,6 +37,7 @@ final class DeskBridgeModel: ObservableObject {
     @Published var captureInput: Bool
     @Published var debugLogging: Bool
     @Published var reverseScroll: Bool
+    @Published var remoteScrollScale: Double
     @Published var clipboardEnabled: Bool
     @Published var clipboardText: Bool
     @Published var clipboardImage: Bool
@@ -72,6 +73,7 @@ final class DeskBridgeModel: ObservableObject {
         captureInput = defaults.object(forKey: "captureInput") as? Bool ?? true
         debugLogging = defaults.object(forKey: "debugLogging") as? Bool ?? true
         reverseScroll = defaults.object(forKey: "reverseScroll") as? Bool ?? false
+        remoteScrollScale = Self.normalizeRemoteScrollScale(defaults.object(forKey: "remoteScrollScale") as? Double ?? 1.0)
         clipboardEnabled = defaults.object(forKey: "clipboardEnabled") as? Bool ?? true
         clipboardText = defaults.object(forKey: "clipboardText") as? Bool ?? true
         clipboardImage = defaults.object(forKey: "clipboardImage") as? Bool ?? true
@@ -178,6 +180,7 @@ final class DeskBridgeModel: ObservableObject {
         defaults.set(captureInput, forKey: "captureInput")
         defaults.set(debugLogging, forKey: "debugLogging")
         defaults.set(reverseScroll, forKey: "reverseScroll")
+        defaults.set(Self.normalizeRemoteScrollScale(remoteScrollScale), forKey: "remoteScrollScale")
         defaults.set(clipboardEnabled, forKey: "clipboardEnabled")
         defaults.set(clipboardText, forKey: "clipboardText")
         defaults.set(clipboardImage, forKey: "clipboardImage")
@@ -299,6 +302,11 @@ final class DeskBridgeModel: ObservableObject {
         let server = localDebugServerAddress
         let name = peerScreenName
         let reverseValue = reverseScroll ? "true" : "false"
+        let remoteScrollScaleValue = String(
+            format: "%.3f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            Self.normalizeRemoteScrollScale(remoteScrollScale)
+        )
 
         Task {
             let output = await Task.detached {
@@ -312,6 +320,7 @@ final class DeskBridgeModel: ObservableObject {
                         "input-settings",
                         "--apply-config",
                         "--reverse-scroll", reverseValue,
+                        "--remote-scroll-scale", remoteScrollScaleValue,
                     ]
                 )
             }.value
@@ -398,6 +407,14 @@ final class DeskBridgeModel: ObservableObject {
         if reverseScroll {
             arguments.append("--reverse-scroll")
         }
+        arguments.append(contentsOf: [
+            "--remote-scroll-scale",
+            String(
+                format: "%.3f",
+                locale: Locale(identifier: "en_US_POSIX"),
+                Self.normalizeRemoteScrollScale(remoteScrollScale)
+            ),
+        ])
 
         launchDaemon(arguments: arguments, launchingStatus: "Starting")
     }
@@ -706,6 +723,7 @@ final class DeskBridgeModel: ObservableObject {
             ],
             "input": [
                 "reverse_scroll": mode == .server && reverseScroll,
+                "remote_scroll_scale": mode == .server ? Self.normalizeRemoteScrollScale(remoteScrollScale) : 1.0,
             ],
             "clipboard": [
                 "enabled": clipboardEnabled,
@@ -719,6 +737,14 @@ final class DeskBridgeModel: ObservableObject {
 
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: configPath, options: .atomic)
+    }
+
+    private static func normalizeRemoteScrollScale(_ value: Double) -> Double {
+        guard value.isFinite else {
+            return 1.0
+        }
+
+        return min(2.0, max(0.25, (value * 100).rounded() / 100))
     }
 
     private func serverLinkEdge() -> LayoutPreviewEdge {

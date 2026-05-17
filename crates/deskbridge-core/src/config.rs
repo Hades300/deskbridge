@@ -3,7 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::{fs, io, path::Path};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub const DEFAULT_REMOTE_SCROLL_SCALE: f64 = 1.0;
+pub const MIN_REMOTE_SCROLL_SCALE: f64 = 0.25;
+pub const MAX_REMOTE_SCROLL_SCALE: f64 = 2.0;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeskBridgeConfig {
     pub server: ServerConfig,
     pub client: ClientConfig,
@@ -34,10 +38,33 @@ pub struct ReliabilityConfig {
     pub stale_after_ms: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InputConfig {
     #[serde(default)]
     pub reverse_scroll: bool,
+    #[serde(default = "default_remote_scroll_scale")]
+    pub remote_scroll_scale: f64,
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self {
+            reverse_scroll: false,
+            remote_scroll_scale: DEFAULT_REMOTE_SCROLL_SCALE,
+        }
+    }
+}
+
+pub fn normalize_remote_scroll_scale(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(MIN_REMOTE_SCROLL_SCALE, MAX_REMOTE_SCROLL_SCALE)
+    } else {
+        DEFAULT_REMOTE_SCROLL_SCALE
+    }
+}
+
+fn default_remote_scroll_scale() -> f64 {
+    DEFAULT_REMOTE_SCROLL_SCALE
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,5 +197,12 @@ mod tests {
         let decoded: DeskBridgeConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config, decoded);
         decoded.validate().unwrap();
+    }
+
+    #[test]
+    fn input_config_defaults_scroll_scale_for_old_configs() {
+        let decoded: InputConfig = serde_json::from_str(r#"{"reverse_scroll":true}"#).unwrap();
+        assert!(decoded.reverse_scroll);
+        assert_eq!(decoded.remote_scroll_scale, DEFAULT_REMOTE_SCROLL_SCALE);
     }
 }

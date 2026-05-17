@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -120,6 +121,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private bool _captureInput = true;
     private bool _debugLogging = true;
     private bool _reverseScroll;
+    private double _remoteScrollScale = DefaultRemoteScrollScale;
     private bool _clipboardEnabled = true;
     private bool _clipboardText = true;
     private bool _clipboardImage = true;
@@ -144,6 +146,9 @@ public sealed class MainWindowModel : INotifyPropertyChanged
     private const double PreviewCanvasHeight = 220;
     private const double PreviewPadding = 18;
     private const double MinOverlap = 140;
+    private const double DefaultRemoteScrollScale = 1.0;
+    private const double MinRemoteScrollScale = 0.25;
+    private const double MaxRemoteScrollScale = 2.0;
     private const int SM_CXSCREEN = 0;
     private const int SM_CYSCREEN = 1;
     private const int SM_CXVIRTUALSCREEN = 78;
@@ -252,6 +257,22 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             }
         }
     }
+
+    public double RemoteScrollScale
+    {
+        get => _remoteScrollScale;
+        set
+        {
+            var normalized = NormalizeRemoteScrollScale(value);
+            if (SetField(ref _remoteScrollScale, normalized))
+            {
+                OnPropertyChanged(nameof(RemoteScrollScaleLabel));
+                ApplyRuntimeInputSettings();
+            }
+        }
+    }
+
+    public string RemoteScrollScaleLabel => $"{RemoteScrollScale:0.00}x";
 
     public bool ClipboardEnabled
     {
@@ -439,6 +460,10 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         {
             daemonArgs += " --reverse-scroll";
         }
+        if (IsServerMode)
+        {
+            daemonArgs += " --remote-scroll-scale " + RemoteScrollScale.ToString("0.###", CultureInfo.InvariantCulture);
+        }
 
         var process = new Process
         {
@@ -478,7 +503,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             StatusText = IsServerMode ? "Running" : "Connected";
             StatusBrush = SuccessBrush;
             Diagnostics =
-                $"Started DeskBridge {Mode.ToLowerInvariant()}.\nArgs: {daemonArgs}\nScreen: {(IsServerMode ? ServerName : AllowedClient)}\nPeer: {(IsServerMode ? AllowedClient : ServerName)}\nReverse scroll: {IsServerMode && ReverseScroll}\nDaemon: {daemonPath}";
+                $"Started DeskBridge {Mode.ToLowerInvariant()}.\nArgs: {daemonArgs}\nScreen: {(IsServerMode ? ServerName : AllowedClient)}\nPeer: {(IsServerMode ? AllowedClient : ServerName)}\nReverse scroll: {IsServerMode && ReverseScroll}\nRemote wheel speed: {(IsServerMode ? RemoteScrollScaleLabel : "server-controlled")}\nDaemon: {daemonPath}";
         }
         catch (Exception ex)
         {
@@ -556,7 +581,11 @@ public sealed class MainWindowModel : INotifyPropertyChanged
                 links = new object[] { new { from = ServerName, edge, to = AllowedClient } },
             },
             reliability = new { heartbeat_ms = 2000, reconnect_max_ms = 10000, stale_after_ms = 6000 },
-            input = new { reverse_scroll = IsServerMode && ReverseScroll },
+            input = new
+            {
+                reverse_scroll = IsServerMode && ReverseScroll,
+                remote_scroll_scale = IsServerMode ? RemoteScrollScale : DefaultRemoteScrollScale,
+            },
             clipboard = new
             {
                 enabled = ClipboardEnabled,
@@ -623,6 +652,10 @@ public sealed class MainWindowModel : INotifyPropertyChanged
             if (ReadBool(input, "reverse_scroll") is { } reverseScroll)
             {
                 _reverseScroll = reverseScroll;
+            }
+            if (input is not null && ReadNumber(input, "remote_scroll_scale") is { } remoteScrollScale)
+            {
+                _remoteScrollScale = NormalizeRemoteScrollScale(remoteScrollScale);
             }
             if (ReadBool(clipboard, "enabled") is { } clipboardEnabled)
             {
@@ -726,6 +759,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         var localServer = $"127.0.0.1:{ListenPort()}";
         var targetName = AllowedClient;
         var reverseScroll = ReverseScroll.ToString().ToLowerInvariant();
+        var remoteScrollScale = RemoteScrollScale.ToString("0.###", CultureInfo.InvariantCulture);
 
         _ = Task.Run(() => RunDaemonCommand(
             daemon,
@@ -742,6 +776,8 @@ public sealed class MainWindowModel : INotifyPropertyChanged
                 "--apply-config",
                 "--reverse-scroll",
                 reverseScroll,
+                "--remote-scroll-scale",
+                remoteScrollScale,
             },
             3000)).ContinueWith(task =>
         {
@@ -760,7 +796,7 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         var targetName = IsServerMode ? AllowedClient : AllowedClient;
         var sections = new List<string>
         {
-            $"Status: {StatusText}\nMode: {Mode}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nClient server: {ClientServerAddress}\nRoute: {RouteSummary}\nDebug capture log: {DebugLogging}\nReverse scroll: {IsServerMode && ReverseScroll}\n" +
+            $"Status: {StatusText}\nMode: {Mode}\nTracked daemon: {DescribeTrackedDaemon()}\nServer: {ListenAddress}\nClient server: {ClientServerAddress}\nRoute: {RouteSummary}\nDebug capture log: {DebugLogging}\nReverse scroll: {IsServerMode && ReverseScroll}\nRemote wheel speed: {(IsServerMode ? RemoteScrollScaleLabel : "server-controlled")}\n" +
             $"Clipboard: enabled={ClipboardEnabled} text={ClipboardText} image={ClipboardImage} files={ClipboardFiles}\n" +
             $"Admin display model: local={Math.Round(LocalWidth)}x{Math.Round(LocalHeight)} peer={Math.Round(PeerWidth)}x{Math.Round(PeerHeight)} offset=({Math.Round(PeerOffsetX)},{Math.Round(PeerOffsetY)}) {EntryRangeSummary()}\n" +
             $"Daemon: {daemon}\nDeskBridge processes:\n{DescribeDeskBridgeProcesses()}",
@@ -1046,6 +1082,16 @@ public sealed class MainWindowModel : INotifyPropertyChanged
         {
             return null;
         }
+    }
+
+    private static double NormalizeRemoteScrollScale(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return DefaultRemoteScrollScale;
+        }
+
+        return Math.Round(Math.Clamp(value, MinRemoteScrollScale, MaxRemoteScrollScale), 2);
     }
 
     private static (double Width, double Height) ReadPlatformScreenSize()
