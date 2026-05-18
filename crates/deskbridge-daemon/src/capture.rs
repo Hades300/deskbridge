@@ -76,7 +76,7 @@ pub mod windows {
         SetProcessDPIAware, SetWindowsHookExW, ShowCursor, TranslateMessage, UnhookWindowsHookEx,
         WH_KEYBOARD_LL, WH_MOUSE_LL, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
         WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
-        WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
+        WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, XBUTTON1, XBUTTON2,
     };
 
     static CAPTURE_TX: OnceLock<Mutex<CaptureSender>> = OnceLock::new();
@@ -554,6 +554,12 @@ pub mod windows {
             WM_RBUTTONUP => vec![mouse_button(Button::Right, KeyState::Released)],
             WM_MBUTTONDOWN => vec![mouse_button(Button::Middle, KeyState::Pressed)],
             WM_MBUTTONUP => vec![mouse_button(Button::Middle, KeyState::Released)],
+            WM_XBUTTONDOWN => x_button_from_mouse_data(hook.mouseData)
+                .map(|button| vec![mouse_button(button, KeyState::Pressed)])
+                .unwrap_or_default(),
+            WM_XBUTTONUP => x_button_from_mouse_data(hook.mouseData)
+                .map(|button| vec![mouse_button(button, KeyState::Released)])
+                .unwrap_or_default(),
             WM_MOUSEWHEEL => {
                 let delta = ((hook.mouseData >> 16) as i16) as i32;
                 let dy = vertical_wheel_notches(delta);
@@ -564,6 +570,14 @@ pub mod windows {
                 }
             }
             _ => Vec::new(),
+        }
+    }
+
+    fn x_button_from_mouse_data(mouse_data: u32) -> Option<Button> {
+        match ((mouse_data >> 16) & 0xffff) as u16 {
+            XBUTTON1 => Some(Button::Back),
+            XBUTTON2 => Some(Button::Forward),
+            _ => None,
         }
     }
 
@@ -760,6 +774,19 @@ pub mod windows {
         }
 
         #[test]
+        fn maps_windows_x_buttons_to_side_buttons() {
+            assert_eq!(
+                x_button_from_mouse_data((XBUTTON1 as u32) << 16),
+                Some(Button::Back)
+            );
+            assert_eq!(
+                x_button_from_mouse_data((XBUTTON2 as u32) << 16),
+                Some(Button::Forward)
+            );
+            assert_eq!(x_button_from_mouse_data(0), None);
+        }
+
+        #[test]
         fn maps_extended_windows_keys() {
             assert_eq!(key_name(VK_LSHIFT as u32).as_deref(), Some("shift"));
             assert_eq!(key_name(VK_RSHIFT as u32).as_deref(), Some("shift"));
@@ -844,8 +871,12 @@ pub mod macos {
             CGEventType::LeftMouseUp => vec![mouse_button(Button::Left, KeyState::Released)],
             CGEventType::RightMouseDown => vec![mouse_button(Button::Right, KeyState::Pressed)],
             CGEventType::RightMouseUp => vec![mouse_button(Button::Right, KeyState::Released)],
-            CGEventType::OtherMouseDown => vec![mouse_button(Button::Middle, KeyState::Pressed)],
-            CGEventType::OtherMouseUp => vec![mouse_button(Button::Middle, KeyState::Released)],
+            CGEventType::OtherMouseDown => button_from_other_mouse_event(event)
+                .map(|button| vec![mouse_button(button, KeyState::Pressed)])
+                .unwrap_or_default(),
+            CGEventType::OtherMouseUp => button_from_other_mouse_event(event)
+                .map(|button| vec![mouse_button(button, KeyState::Released)])
+                .unwrap_or_default(),
             CGEventType::ScrollWheel => vec![CaptureEvent::Input(InputEvent::Wheel {
                 dx: event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2)
                     as i32,
@@ -859,6 +890,21 @@ pub mod macos {
                 .into_iter()
                 .collect(),
             _ => Vec::new(),
+        }
+    }
+
+    fn button_from_other_mouse_event(event: &CGEvent) -> Option<Button> {
+        button_from_cg_button_number(
+            event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER),
+        )
+    }
+
+    fn button_from_cg_button_number(button_number: i64) -> Option<Button> {
+        match button_number {
+            2 => Some(Button::Middle),
+            3 => Some(Button::Back),
+            4 => Some(Button::Forward),
+            _ => None,
         }
     }
 
@@ -947,6 +993,19 @@ pub mod macos {
         };
 
         Some(key.to_string())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn maps_cg_other_mouse_buttons_to_named_buttons() {
+            assert_eq!(button_from_cg_button_number(2), Some(Button::Middle));
+            assert_eq!(button_from_cg_button_number(3), Some(Button::Back));
+            assert_eq!(button_from_cg_button_number(4), Some(Button::Forward));
+            assert_eq!(button_from_cg_button_number(5), None);
+        }
     }
 }
 

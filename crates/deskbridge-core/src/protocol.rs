@@ -536,6 +536,27 @@ mod tests {
     }
 
     #[test]
+    fn mouse_side_buttons_round_trip() {
+        for button in [Button::Back, Button::Forward] {
+            let packet = Message::Input(InputPacket {
+                seq: 42,
+                event: InputEvent::MouseButton {
+                    button,
+                    state: KeyState::Pressed,
+                },
+            });
+            let encoded = serde_json::to_string(&packet).unwrap();
+            assert!(encoded.contains(if button == Button::Back {
+                "\"back\""
+            } else {
+                "\"forward\""
+            }));
+            let decoded: Message = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(packet, decoded);
+        }
+    }
+
+    #[test]
     fn clipboard_text_round_trips() {
         let packet = Message::Clipboard(ClipboardPacket {
             seq: 7,

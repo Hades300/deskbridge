@@ -40,6 +40,9 @@ pub struct DisplayInfo {
 struct PressedButtons {
     left: bool,
     right: bool,
+    middle: bool,
+    back: bool,
+    forward: bool,
 }
 
 impl EnigoSink {
@@ -190,7 +193,9 @@ impl PressedButtons {
         match button {
             Button::Left => self.left = pressed,
             Button::Right => self.right = pressed,
-            Button::Middle | Button::Back | Button::Forward => {}
+            Button::Middle => self.middle = pressed,
+            Button::Back => self.back = pressed,
+            Button::Forward => self.forward = pressed,
         }
     }
 
@@ -207,6 +212,18 @@ impl PressedButtons {
         if self.right {
             buttons.push(Button::Right);
             self.right = false;
+        }
+        if self.middle {
+            buttons.push(Button::Middle);
+            self.middle = false;
+        }
+        if self.back {
+            buttons.push(Button::Back);
+            self.back = false;
+        }
+        if self.forward {
+            buttons.push(Button::Forward);
+            self.forward = false;
         }
         buttons
     }
@@ -932,6 +949,28 @@ mod tests {
 
         buttons.apply(Button::Left, KeyState::Clicked);
         assert!(!buttons.has_primary_drag());
+    }
+
+    #[test]
+    fn releases_all_pressed_mouse_buttons_for_session_cleanup() {
+        let mut buttons = PressedButtons::default();
+        buttons.apply(Button::Left, KeyState::Pressed);
+        buttons.apply(Button::Right, KeyState::Pressed);
+        buttons.apply(Button::Middle, KeyState::Pressed);
+        buttons.apply(Button::Back, KeyState::Pressed);
+        buttons.apply(Button::Forward, KeyState::Pressed);
+
+        assert_eq!(
+            buttons.release_buttons(),
+            vec![
+                Button::Left,
+                Button::Right,
+                Button::Middle,
+                Button::Back,
+                Button::Forward
+            ]
+        );
+        assert!(buttons.release_buttons().is_empty());
     }
 
     #[test]
