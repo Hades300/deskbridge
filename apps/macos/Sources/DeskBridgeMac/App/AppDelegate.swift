@@ -1,16 +1,28 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
+    private var statusMenuItem: NSMenuItem?
+    private var openMenuItem: NSMenuItem?
+    private var connectMenuItem: NSMenuItem?
+    private var disconnectMenuItem: NSMenuItem?
+    private var diagnosticsMenuItem: NSMenuItem?
     private var window: NSWindow?
     private let model = DeskBridgeModel()
+    private var statusObserver: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         installStatusItem()
+        observeModelStatus()
         showWindow()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     func applicationShouldHandleReopen(
@@ -26,19 +38,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "keyboard.macwindow", accessibilityDescription: "DeskBridge")
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = statusBarImage()
+        item.button?.imagePosition = .imageOnly
         item.button?.toolTip = "DeskBridge"
+        item.button?.appearsDisabled = false
 
         let menu = NSMenu()
-        menu.addItem(menuItem("Open DeskBridge", action: #selector(openWindow)))
-        menu.addItem(menuItem("Connect", action: #selector(connect)))
-        menu.addItem(menuItem("Disconnect", action: #selector(disconnect)))
-        menu.addItem(menuItem("Diagnose", action: #selector(diagnose)))
+        menu.delegate = self
+
+        let statusLineItem = NSMenuItem(title: "DeskBridge", action: nil, keyEquivalent: "")
+        statusLineItem.isEnabled = false
+        statusLineItem.image = NSImage(systemSymbolName: "bolt.horizontal.circle", accessibilityDescription: nil)
+        menu.addItem(statusLineItem)
         menu.addItem(.separator())
-        menu.addItem(menuItem("Quit", action: #selector(quit), keyEquivalent: "q"))
+
+        let openItem = menuItem("Open Control Panel", action: #selector(openWindow))
+        openItem.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
+        menu.addItem(openItem)
+
+        let connectItem = menuItem("Connect", action: #selector(connect))
+        connectItem.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: nil)
+        menu.addItem(connectItem)
+
+        let disconnectItem = menuItem("Disconnect", action: #selector(disconnect))
+        disconnectItem.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)
+        menu.addItem(disconnectItem)
+
+        let diagnosticsItem = menuItem("Run Diagnostics", action: #selector(diagnose))
+        diagnosticsItem.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: nil)
+        menu.addItem(diagnosticsItem)
+        menu.addItem(.separator())
+
+        let quitItem = menuItem("Quit DeskBridge", action: #selector(quit), keyEquivalent: "q")
+        quitItem.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
+        menu.addItem(quitItem)
+
         item.menu = menu
-        statusItem = item
+
+        self.statusMenuItem = statusLineItem
+        self.openMenuItem = openItem
+        self.connectMenuItem = connectItem
+        self.disconnectMenuItem = disconnectItem
+        self.diagnosticsMenuItem = diagnosticsItem
+        self.statusItem = item
+        updateStatusMenu()
     }
 
     private func menuItem(
@@ -49,6 +93,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = self
         return item
+    }
+
+    private func statusBarImage() -> NSImage? {
+        let image = NSImage(named: "StatusBarIconTemplate")
+            ?? NSImage(systemSymbolName: "display.2", accessibilityDescription: "DeskBridge")
+        image?.isTemplate = true
+        image?.size = NSSize(width: 18, height: 18)
+        return image
+    }
+
+    private func observeModelStatus() {
+        statusObserver = model.$status
+            .combineLatest(model.$connected, model.$mode)
+            .sink { [weak self] _, _, _ in
+                Task { @MainActor in
+                    self?.updateStatusMenu()
+                }
+            }
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        updateStatusMenu()
+    }
+
+    private func updateStatusMenu() {
+        let role = model.localRoleLabel
+        let status = model.status
+        statusMenuItem?.title = "\(role) - \(status)"
+        statusItem?.button?.toolTip = "DeskBridge - \(role) - \(status)"
+
+        connectMenuItem?.title = model.mode == .server ? "Start Server" : "Connect"
+        disconnectMenuItem?.title = model.mode == .server ? "Stop Server" : "Disconnect"
+        connectMenuItem?.isEnabled = !model.connected
+        disconnectMenuItem?.isEnabled = model.connected || status != "Idle"
+        diagnosticsMenuItem?.isEnabled = true
+        openMenuItem?.title = window?.isVisible == true ? "Show Control Panel" : "Open Control Panel"
     }
 
     private func showWindow() {
@@ -75,8 +155,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.window = window
         }
 
+        if window?.isMiniaturized == true {
+            window?.deminiaturize(nil)
+        }
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
+        updateStatusMenu()
     }
 
     @objc private func openWindow() {

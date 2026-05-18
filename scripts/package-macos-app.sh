@@ -43,11 +43,17 @@ codesign_app() {
 }
 
 "$ROOT/scripts/build-macos.sh"
+"$ROOT/scripts/generate-macos-icons.swift"
 
 rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES" "$HELPER_MACOS"
 cp "$ROOT/apps/macos/.build/debug/DeskBridgeMac" "$MACOS/DeskBridgeMac"
 cp "$ROOT/target/debug/deskbridge" "$HELPER_MACOS/deskbridge"
+if [[ -d "$ROOT/apps/macos/Resources" ]]; then
+  find "$ROOT/apps/macos/Resources" -maxdepth 1 -type f -print0 | while IFS= read -r -d '' resource; do
+    cp "$resource" "$RESOURCES/"
+  done
+fi
 
 /usr/bin/python3 - <<PY
 from pathlib import Path
@@ -64,6 +70,8 @@ app_plist = f"""<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleName</key>
   <string>DeskBridge</string>
   <key>CFBundleDisplayName</key>
+  <string>DeskBridge</string>
+  <key>CFBundleIconFile</key>
   <string>DeskBridge</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
