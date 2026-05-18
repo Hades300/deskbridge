@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        installApplicationMenu()
         installStatusItem()
         observeModelStatus()
         showWindow()
@@ -35,6 +36,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         model.shutdown()
+    }
+
+    private func installApplicationMenu() {
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+
+        let appMenu = NSMenu(title: "DeskBridge")
+        appMenu.addItem(menuItem("About DeskBridge", action: #selector(showAboutPanel)))
+        appMenu.addItem(.separator())
+        appMenu.addItem(menuItem("Hide DeskBridge", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h", target: NSApp))
+
+        let hideOthersItem = menuItem(
+            "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h",
+            target: NSApp
+        )
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthersItem)
+
+        appMenu.addItem(menuItem("Show All", action: #selector(NSApplication.unhideAllApplications(_:)), target: NSApp))
+        appMenu.addItem(.separator())
+        appMenu.addItem(menuItem("Quit DeskBridge", action: #selector(quit), keyEquivalent: "q"))
+
+        appMenuItem.submenu = appMenu
+        NSApp.mainMenu = mainMenu
     }
 
     private func installStatusItem() {
@@ -88,10 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func menuItem(
         _ title: String,
         action: Selector,
-        keyEquivalent: String = ""
+        keyEquivalent: String = "",
+        target: AnyObject? = nil
     ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
-        item.target = self
+        item.target = target ?? self
         return item
     }
 
@@ -166,6 +196,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openWindow() {
         showWindow()
+    }
+
+    @objc private func showAboutPanel() {
+        var options: [NSApplication.AboutPanelOptionKey: Any] = [
+            .applicationName: "DeskBridge",
+            .credits: NSAttributedString(string: "Keyboard, mouse, and clipboard sharing for nearby desktops.")
+        ]
+        if let icon = NSImage(named: "DeskBridge") {
+            options[.applicationIcon] = icon
+        }
+        NSApp.orderFrontStandardAboutPanel(options: options)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func connect() {
