@@ -299,9 +299,10 @@ fn move_mouse_rel(
                 .location()
                 .map_err(|err| anyhow!("failed to read mouse location: {err}"))?,
         };
-        *cursor_pos = Some(macos_warp_mouse(
+        *cursor_pos = Some(macos_move_mouse_evented(
             x.saturating_add(dx),
             y.saturating_add(dy),
+            Some((x, y)),
         )?);
         Ok(())
     }
@@ -342,7 +343,11 @@ fn move_mouse_abs(
             return Ok(());
         }
 
-        *cursor_pos = Some(macos_warp_mouse(x, y)?);
+        let previous = match *cursor_pos {
+            Some(pos) => Some(pos),
+            None => current_mouse_location(enigo),
+        };
+        *cursor_pos = Some(macos_move_mouse_evented(x, y, previous)?);
         Ok(())
     }
 
@@ -366,8 +371,11 @@ fn current_mouse_location(enigo: &mut enigo::Enigo) -> Option<(i32, i32)> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_warp_mouse(x: i32, y: i32) -> Result<(i32, i32)> {
+fn macos_move_mouse_evented(x: i32, y: i32, previous: Option<(i32, i32)>) -> Result<(i32, i32)> {
     use core_graphics::display::CGDisplay;
+    use core_graphics::event::{
+        CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, EventField,
+    };
     use core_graphics::geometry::CGPoint;
 
     let bounds = CGDisplay::main().bounds();
@@ -381,7 +389,50 @@ fn macos_warp_mouse(x: i32, y: i32) -> Result<(i32, i32)> {
     );
     CGDisplay::warp_mouse_cursor_position(point)
         .map_err(|err| anyhow!("absolute mouse warp failed: {err:?}"))?;
+
+    let source = macos_mouse_event_source()?;
+    let event =
+        CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
+            .map_err(|_| anyhow!("failed to create macOS mouse moved event"))?;
+    if let Some((previous_x, previous_y)) = previous {
+        event.set_integer_value_field(
+            EventField::MOUSE_EVENT_DELTA_X,
+            clamped_x.saturating_sub(previous_x) as i64,
+        );
+        event.set_integer_value_field(
+            EventField::MOUSE_EVENT_DELTA_Y,
+            clamped_y.saturating_sub(previous_y) as i64,
+        );
+    }
+    event.set_integer_value_field(
+        EventField::EVENT_SOURCE_USER_DATA,
+        enigo::EVENT_MARKER as i64,
+    );
+    event.post(CGEventTapLocation::HID);
+
     Ok((clamped_x, clamped_y))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_mouse_event_source() -> Result<core_graphics::event_source::CGEventSource> {
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SOURCE: RefCell<Option<CGEventSource>> = const { RefCell::new(None) };
+    }
+
+    SOURCE.with(|source| {
+        let mut source = source.borrow_mut();
+        if let Some(source) = source.as_ref() {
+            return Ok(source.clone());
+        }
+
+        let created = CGEventSource::new(CGEventSourceStateID::Private)
+            .map_err(|_| anyhow!("failed to create macOS mouse event source"))?;
+        *source = Some(created.clone());
+        Ok(created)
+    })
 }
 
 fn map_button(button: Button) -> enigo::Button {
