@@ -106,14 +106,14 @@ impl InputSink for EnigoSink {
                 &mut self.cursor_pos,
                 *dx,
                 *dy,
-                self.pressed_buttons.has_primary_drag(),
+                self.pressed_buttons.primary_drag_button(),
             )?,
             InputEvent::MouseAbs { x, y } => move_mouse_abs(
                 &mut self.enigo,
                 &mut self.cursor_pos,
                 *x,
                 *y,
-                self.pressed_buttons.has_primary_drag(),
+                self.pressed_buttons.primary_drag_button(),
             )?,
             InputEvent::MouseButton { button, state } => {
                 self.enigo
@@ -201,6 +201,16 @@ impl PressedButtons {
 
     fn has_primary_drag(&self) -> bool {
         self.left || self.right
+    }
+
+    fn primary_drag_button(&self) -> Option<Button> {
+        if self.left {
+            Some(Button::Left)
+        } else if self.right {
+            Some(Button::Right)
+        } else {
+            None
+        }
     }
 
     fn release_buttons(&mut self) -> Vec<Button> {
@@ -293,22 +303,11 @@ fn move_mouse_rel(
     cursor_pos: &mut Option<(i32, i32)>,
     dx: i32,
     dy: i32,
-    dragging: bool,
+    drag_button: Option<Button>,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        use enigo::{Coordinate, Mouse};
-
-        if dragging {
-            enigo
-                .move_mouse(dx, dy, Coordinate::Rel)
-                .map_err(|err| anyhow!("mouse drag failed: {err}"))?;
-            let fallback = cursor_pos
-                .as_ref()
-                .map(|(x, y)| (x.saturating_add(dx), y.saturating_add(dy)));
-            *cursor_pos = current_mouse_location(enigo).or(fallback);
-            return Ok(());
-        }
+        use enigo::Mouse;
 
         let (x, y) = match *cursor_pos {
             Some(pos) => pos,
@@ -320,13 +319,14 @@ fn move_mouse_rel(
             x.saturating_add(dx),
             y.saturating_add(dy),
             Some((x, y)),
+            drag_button,
         )?);
         Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = dragging;
+        let _ = drag_button;
         use enigo::{Coordinate, Mouse};
         let result = enigo
             .move_mouse(dx, dy, Coordinate::Rel)
@@ -346,31 +346,21 @@ fn move_mouse_abs(
     cursor_pos: &mut Option<(i32, i32)>,
     x: i32,
     y: i32,
-    dragging: bool,
+    drag_button: Option<Button>,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        use enigo::{Coordinate, Mouse};
-
-        if dragging {
-            enigo
-                .move_mouse(x, y, Coordinate::Abs)
-                .map_err(|err| anyhow!("absolute mouse drag failed: {err}"))?;
-            *cursor_pos = current_mouse_location(enigo).or(Some((x, y)));
-            return Ok(());
-        }
-
         let previous = match *cursor_pos {
             Some(pos) => Some(pos),
             None => current_mouse_location(enigo),
         };
-        *cursor_pos = Some(macos_move_mouse_evented(x, y, previous)?);
+        *cursor_pos = Some(macos_move_mouse_evented(x, y, previous, drag_button)?);
         Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = dragging;
+        let _ = drag_button;
         use enigo::{Coordinate, Mouse};
         let result = enigo
             .move_mouse(x, y, Coordinate::Abs)
@@ -388,7 +378,12 @@ fn current_mouse_location(enigo: &mut enigo::Enigo) -> Option<(i32, i32)> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_move_mouse_evented(x: i32, y: i32, previous: Option<(i32, i32)>) -> Result<(i32, i32)> {
+fn macos_move_mouse_evented(
+    x: i32,
+    y: i32,
+    previous: Option<(i32, i32)>,
+    drag_button: Option<Button>,
+) -> Result<(i32, i32)> {
     use core_graphics::display::CGDisplay;
     use core_graphics::event::{
         CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, EventField,
@@ -408,9 +403,13 @@ fn macos_move_mouse_evented(x: i32, y: i32, previous: Option<(i32, i32)>) -> Res
         .map_err(|err| anyhow!("absolute mouse warp failed: {err:?}"))?;
 
     let source = macos_mouse_event_source()?;
-    let event =
-        CGEvent::new_mouse_event(source, CGEventType::MouseMoved, point, CGMouseButton::Left)
-            .map_err(|_| anyhow!("failed to create macOS mouse moved event"))?;
+    let (event_type, mouse_button) = match drag_button {
+        Some(Button::Left) => (CGEventType::LeftMouseDragged, CGMouseButton::Left),
+        Some(Button::Right) => (CGEventType::RightMouseDragged, CGMouseButton::Right),
+        _ => (CGEventType::MouseMoved, CGMouseButton::Left),
+    };
+    let event = CGEvent::new_mouse_event(source, event_type, point, mouse_button)
+        .map_err(|_| anyhow!("failed to create macOS mouse moved event"))?;
     if let Some((previous_x, previous_y)) = previous {
         event.set_integer_value_field(
             EventField::MOUSE_EVENT_DELTA_X,

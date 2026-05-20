@@ -121,6 +121,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     let mut received_events = 0_u64;
     let mut last_rx = Instant::now();
     let mut debug_state = ClientDebugState::new(options);
+    let mut deferred_inbound: Option<Result<Message, FrameError>> = None;
     debug_state.push(format!("connected to server {}", options.server));
     if options.clipboard.enabled && !server_clipboard_supported {
         debug_state
@@ -129,6 +130,79 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
 
     let session_result: Result<ClientSessionOutcome> = async {
         loop {
+        if let Some(msg) = deferred_inbound.take() {
+            let message = msg?;
+            last_rx = Instant::now();
+            match message {
+                Message::Ping(ping) => {
+                    write_frame(&mut writer, &Message::Pong(Pong {
+                        seq: ping.seq,
+                        sent_at_ms: ping.sent_at_ms,
+                    })).await?;
+                }
+                Message::Pong(pong) => {
+                    debug!(seq = pong.seq, "heartbeat acknowledged");
+                }
+                Message::Input(mut packet) => {
+                    let batch = coalesce_mouse_move_packet(packet, &mut inbound, &mut deferred_inbound);
+                    packet = batch.packet;
+                    let received_at_ms = deskbridge_core::now_ms();
+                    if options.reverse_scroll {
+                        reverse_scroll_event(&mut packet.event);
+                    }
+                    let apply_started = Instant::now();
+                    sink.apply(&packet).await?;
+                    let apply_duration_us = apply_started.elapsed().as_micros();
+                    let applied_at_ms = deskbridge_core::now_ms();
+                    write_input_acks(
+                        &mut writer,
+                        &batch.ack_seqs,
+                        received_at_ms,
+                        applied_at_ms,
+                        apply_duration_us,
+                    ).await?;
+                    received_events = received_events.saturating_add(batch.ack_seqs.len() as u64);
+                    debug_state.record_input(&packet.event, apply_duration_us, applied_at_ms);
+                    if batch.coalesced_count > 0 {
+                        debug_state.push(format!(
+                            "coalesced {} queued mouse moves",
+                            batch.coalesced_count
+                        ));
+                    }
+                    if options.max_events.is_some_and(|max_events| received_events >= max_events) {
+                        break Ok(ClientSessionOutcome::Ended);
+                    }
+                }
+                Message::Clipboard(packet) => {
+                    if let Some(runtime) = &clipboard_runtime {
+                        match runtime.apply_remote(packet).await {
+                            Ok(summary) => debug_state.push(format!("applied remote clipboard {summary}")),
+                            Err(err) => {
+                                debug_state.push(format!("remote clipboard apply failed: {err:#}"));
+                                warn!(error = %err, "remote clipboard apply failed");
+                            }
+                        }
+                    }
+                }
+                Message::PortalFlash(_) => {}
+                Message::DebugRequest(request) => {
+                    let response = handle_debug_request(request, sink.as_mut(), &mut debug_state).await;
+                    write_frame(&mut writer, &Message::DebugResponse(response)).await?;
+                }
+                Message::Status(status) => {
+                    warn!(kind = ?status.kind, message = status.message, "server status");
+                }
+                Message::Goodbye { reason } => {
+                    if reason == REPLACED_SESSION_REASON {
+                        break Ok(ClientSessionOutcome::Replaced);
+                    }
+                    break Err(anyhow!("server closed session: {reason}"));
+                }
+                other => debug!(message = ?other, "ignored message"),
+            }
+            continue;
+        }
+
         tokio::select! {
             _ = ticker.tick() => {
                 seq += 1;
@@ -170,6 +244,8 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                         debug!(seq = pong.seq, "heartbeat acknowledged");
                     }
                     Message::Input(mut packet) => {
+                        let batch = coalesce_mouse_move_packet(packet, &mut inbound, &mut deferred_inbound);
+                        packet = batch.packet;
                         let received_at_ms = deskbridge_core::now_ms();
                         if options.reverse_scroll {
                             reverse_scroll_event(&mut packet.event);
@@ -178,14 +254,21 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                         sink.apply(&packet).await?;
                         let apply_duration_us = apply_started.elapsed().as_micros();
                         let applied_at_ms = deskbridge_core::now_ms();
-                        write_frame(&mut writer, &Message::Ack(EventAck {
-                            seq: packet.seq,
-                            received_at_ms: Some(received_at_ms),
-                            applied_at_ms: Some(applied_at_ms),
-                            apply_duration_us: Some(apply_duration_us),
-                        })).await?;
-                        received_events += 1;
+                        write_input_acks(
+                            &mut writer,
+                            &batch.ack_seqs,
+                            received_at_ms,
+                            applied_at_ms,
+                            apply_duration_us,
+                        ).await?;
+                        received_events = received_events.saturating_add(batch.ack_seqs.len() as u64);
                         debug_state.record_input(&packet.event, apply_duration_us, applied_at_ms);
+                        if batch.coalesced_count > 0 {
+                            debug_state.push(format!(
+                                "coalesced {} queued mouse moves",
+                                batch.coalesced_count
+                            ));
+                        }
                         if options.max_events.is_some_and(|max_events| received_events >= max_events) {
                             break Ok(ClientSessionOutcome::Ended);
                         }
@@ -243,6 +326,107 @@ fn reverse_scroll_event(event: &mut InputEvent) {
         *dx = dx.saturating_neg();
         *dy = dy.saturating_neg();
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct InputBatch {
+    packet: InputPacket,
+    ack_seqs: Vec<u64>,
+    coalesced_count: usize,
+}
+
+fn coalesce_mouse_move_packet(
+    packet: InputPacket,
+    inbound: &mut mpsc::UnboundedReceiver<Result<Message, FrameError>>,
+    deferred_inbound: &mut Option<Result<Message, FrameError>>,
+) -> InputBatch {
+    let seq = packet.seq;
+    let (mut dx, mut dy) = match packet.event {
+        InputEvent::MouseMove { dx, dy } => (dx, dy),
+        event => {
+            return InputBatch {
+                packet: InputPacket { seq, event },
+                ack_seqs: vec![seq],
+                coalesced_count: 0,
+            };
+        }
+    };
+
+    let mut ack_seqs = vec![seq];
+    let mut last_seq = seq;
+    let mut coalesced_count = 0;
+
+    while let Ok(next) = inbound.try_recv() {
+        match next {
+            Ok(Message::Input(InputPacket {
+                seq,
+                event:
+                    InputEvent::MouseMove {
+                        dx: next_dx,
+                        dy: next_dy,
+                    },
+            })) => {
+                dx = dx.saturating_add(next_dx);
+                dy = dy.saturating_add(next_dy);
+                ack_seqs.push(seq);
+                last_seq = seq;
+                coalesced_count += 1;
+            }
+            other => {
+                *deferred_inbound = Some(other);
+                break;
+            }
+        }
+    }
+
+    InputBatch {
+        packet: InputPacket {
+            seq: last_seq,
+            event: InputEvent::MouseMove { dx, dy },
+        },
+        ack_seqs,
+        coalesced_count,
+    }
+}
+
+async fn write_input_acks<W>(
+    writer: &mut W,
+    ack_seqs: &[u64],
+    received_at_ms: u128,
+    applied_at_ms: u128,
+    apply_duration_us: u128,
+) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let Some((&last_seq, earlier_seqs)) = ack_seqs.split_last() else {
+        return Ok(());
+    };
+
+    for seq in earlier_seqs {
+        write_frame(
+            writer,
+            &Message::Ack(EventAck {
+                seq: *seq,
+                received_at_ms: Some(received_at_ms),
+                applied_at_ms: Some(applied_at_ms),
+                apply_duration_us: Some(0),
+            }),
+        )
+        .await?;
+    }
+
+    write_frame(
+        writer,
+        &Message::Ack(EventAck {
+            seq: last_seq,
+            received_at_ms: Some(received_at_ms),
+            applied_at_ms: Some(applied_at_ms),
+            apply_duration_us: Some(apply_duration_us),
+        }),
+    )
+    .await?;
+    Ok(())
 }
 
 fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
@@ -576,6 +760,7 @@ fn client_hello(options: &ClientOptions) -> Hello {
 mod tests {
     use super::*;
     use deskbridge_core::{InputPacket, Welcome};
+    use tokio::io::duplex;
     use tokio::net::TcpListener;
     use uuid::Uuid;
 
@@ -635,6 +820,90 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+    }
+
+    #[test]
+    fn coalesces_queued_mouse_move_packets_without_reordering() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(Ok(Message::Input(InputPacket {
+            seq: 2,
+            event: InputEvent::MouseMove { dx: 3, dy: 4 },
+        })))
+        .unwrap();
+        tx.send(Ok(Message::Input(InputPacket {
+            seq: 3,
+            event: InputEvent::MouseMove { dx: -1, dy: 7 },
+        })))
+        .unwrap();
+        tx.send(Ok(Message::Input(InputPacket {
+            seq: 4,
+            event: InputEvent::Wheel { dx: 0, dy: 1 },
+        })))
+        .unwrap();
+
+        let mut deferred = None;
+        let batch = coalesce_mouse_move_packet(
+            InputPacket {
+                seq: 1,
+                event: InputEvent::MouseMove { dx: 10, dy: 20 },
+            },
+            &mut rx,
+            &mut deferred,
+        );
+
+        assert_eq!(
+            batch,
+            InputBatch {
+                packet: InputPacket {
+                    seq: 3,
+                    event: InputEvent::MouseMove { dx: 12, dy: 31 },
+                },
+                ack_seqs: vec![1, 2, 3],
+                coalesced_count: 2,
+            }
+        );
+        assert!(matches!(
+            deferred,
+            Some(Ok(Message::Input(InputPacket {
+                seq: 4,
+                event: InputEvent::Wheel { dx: 0, dy: 1 },
+            })))
+        ));
+    }
+
+    #[tokio::test]
+    async fn coalesced_mouse_move_acks_every_original_sequence() {
+        let (mut writer, mut reader) = duplex(4096);
+
+        write_input_acks(&mut writer, &[1, 2, 3], 10, 20, 42)
+            .await
+            .unwrap();
+
+        for expected in [
+            EventAck {
+                seq: 1,
+                received_at_ms: Some(10),
+                applied_at_ms: Some(20),
+                apply_duration_us: Some(0),
+            },
+            EventAck {
+                seq: 2,
+                received_at_ms: Some(10),
+                applied_at_ms: Some(20),
+                apply_duration_us: Some(0),
+            },
+            EventAck {
+                seq: 3,
+                received_at_ms: Some(10),
+                applied_at_ms: Some(20),
+                apply_duration_us: Some(42),
+            },
+        ] {
+            assert_eq!(
+                read_frame(&mut reader).await.unwrap(),
+                Message::Ack(expected)
+            );
+        }
     }
 
     fn welcome() -> Message {
