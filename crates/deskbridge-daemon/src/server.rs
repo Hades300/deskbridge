@@ -41,6 +41,8 @@ pub struct ServerOptions {
     pub heartbeat_ms: u64,
     pub layout: Layout,
     pub clipboard: ClipboardConfig,
+    pub edge_switch_delay_ms: u64,
+    pub edge_corner_size: u32,
 }
 
 type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
@@ -485,13 +487,15 @@ pub async fn run(options: ServerOptions) -> Result<()> {
     push_server_log(
         &server_log,
         format!(
-            "server listening listen={} screen={} capture={} debug_capture_log={} reverse_scroll={} remote_scroll_scale={:.2} version={} platform={}",
+            "server listening listen={} screen={} capture={} debug_capture_log={} reverse_scroll={} remote_scroll_scale={:.2} edge_switch_delay_ms={} edge_corner_size={} version={} platform={}",
             options.listen,
             options.name,
             options.capture,
             options.debug_capture_log,
             options.reverse_scroll,
             normalize_remote_scroll_scale(options.remote_scroll_scale),
+            options.edge_switch_delay_ms,
+            options.edge_corner_size,
             crate::build_info::version(),
             crate::build_info::platform()
         ),
@@ -836,7 +840,8 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
         &options.name,
         client_name,
     );
-    let mut demo_router = InputRouter::new(route_layout.clone(), options.name.clone()).ok();
+    let mut demo_router =
+        build_session_router(route_layout.clone(), options.name.clone(), options).ok();
     let mut capture_rx = capture_tx.subscribe();
     let mut pending_debug = HashMap::<Uuid, oneshot::Sender<DebugResponse>>::new();
     let mut pending_route_probes = HashMap::<Uuid, PendingRouteProbe>::new();
@@ -1174,7 +1179,8 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                                 peer,
                                 client_name,
                             );
-                            demo_router = InputRouter::new(route_layout.clone(), options.name.clone()).ok();
+                            demo_router =
+                                build_session_router(route_layout.clone(), options.name.clone(), options).ok();
                             crate::capture::set_local_input_suppressed(false);
                         }
                         let active_screen = demo_router
@@ -2257,6 +2263,18 @@ fn route_capture_event(
     route_capture_event_for_client(router, event, client_name).event
 }
 
+/// Build the router used for live capture routing, applying the configured
+/// edge anti-misfire guards (dwell delay and corner dead zone).
+fn build_session_router(
+    layout: Layout,
+    local_screen: String,
+    options: &ServerOptions,
+) -> Result<InputRouter, deskbridge_core::LayoutError> {
+    Ok(InputRouter::new(layout, local_screen)?
+        .with_switch_delay_ms(options.edge_switch_delay_ms)
+        .with_corner_size(options.edge_corner_size))
+}
+
 fn route_capture_event_for_client(
     router: &mut Option<InputRouter>,
     event: CaptureEvent,
@@ -2597,6 +2615,8 @@ mod tests {
                 enabled: false,
                 ..ClipboardConfig::default()
             },
+            edge_switch_delay_ms: 0,
+            edge_corner_size: 0,
         }
     }
 

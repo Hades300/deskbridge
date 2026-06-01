@@ -44,6 +44,14 @@ pub struct InputConfig {
     pub reverse_scroll: bool,
     #[serde(default = "default_remote_scroll_scale")]
     pub remote_scroll_scale: f64,
+    /// Milliseconds the pointer must rest against a linked edge before the
+    /// screen switches. `0` keeps the original switch-on-contact behavior.
+    #[serde(default)]
+    pub edge_switch_delay_ms: u64,
+    /// Pixels from a perpendicular edge that count as a corner dead zone where
+    /// switching is suppressed. `0` disables the corner guard.
+    #[serde(default)]
+    pub edge_corner_size: u32,
 }
 
 impl Default for InputConfig {
@@ -51,6 +59,8 @@ impl Default for InputConfig {
         Self {
             reverse_scroll: false,
             remote_scroll_scale: DEFAULT_REMOTE_SCROLL_SCALE,
+            edge_switch_delay_ms: 0,
+            edge_corner_size: 0,
         }
     }
 }
