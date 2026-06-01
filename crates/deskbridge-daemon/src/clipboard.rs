@@ -45,6 +45,16 @@ impl ClipboardRuntime {
             let mut ticker =
                 time::interval(Duration::from_millis(runtime.options.poll_ms.max(250)));
 
+            // Record whatever is already on the local clipboard as the baseline
+            // so we do not immediately broadcast pre-existing content (which the
+            // user never copied during this session) to the peer.
+            let baseline_runtime = runtime.clone();
+            if let Ok(Ok(Some(content))) =
+                tokio::task::spawn_blocking(move || baseline_runtime.read_local_snapshot()).await
+            {
+                runtime.prime_baseline(clipboard_fingerprint(&content));
+            }
+
             loop {
                 ticker.tick().await;
                 let runtime_for_read = runtime.clone();
@@ -201,6 +211,12 @@ impl ClipboardRuntime {
         }
     }
 
+    fn prime_baseline(&self, fingerprint: u64) {
+        if let Ok(mut state) = self.state.lock() {
+            state.last_observed = Some(fingerprint);
+        }
+    }
+
     fn should_publish_observed(&self, fingerprint: u64) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
@@ -284,8 +300,14 @@ fn files_to_content(paths: Vec<PathBuf>, max_bytes: u64) -> Result<ClipboardCont
     Ok(ClipboardContent::Files { files })
 }
 
+/// Staged clipboard file batches older than this are pruned on the next remote
+/// file paste, so the staging directory does not grow without bound.
+const STAGING_TTL_MS: u128 = 60 * 60 * 1000;
+
 fn stage_remote_files(files: Vec<ClipboardFile>) -> Result<Vec<PathBuf>> {
-    let directory = clipboard_staging_dir().join(format!("{}", deskbridge_core::now_ms()));
+    let root = clipboard_staging_dir();
+    prune_staging_dir(&root, deskbridge_core::now_ms());
+    let directory = root.join(format!("{}", deskbridge_core::now_ms()));
     fs::create_dir_all(&directory).with_context(|| {
         format!(
             "failed to create clipboard staging directory {}",
@@ -321,6 +343,34 @@ fn stage_remote_files(files: Vec<ClipboardFile>) -> Result<Vec<PathBuf>> {
     }
 
     Ok(staged)
+}
+
+/// Best-effort removal of stale staging batches. Each batch lives in a
+/// subdirectory whose name is the millisecond timestamp it was created at;
+/// anything older than [`STAGING_TTL_MS`] is deleted.
+fn prune_staging_dir(root: &Path, now_ms: u128) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let created_ms = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.parse::<u128>().ok());
+        let stale = match created_ms {
+            Some(created_ms) => now_ms.saturating_sub(created_ms) > STAGING_TTL_MS,
+            // Unrecognized directory names are also cleaned up so manual or
+            // legacy entries do not linger forever.
+            None => true,
+        };
+        if stale {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
 }
 
 fn unique_staged_path(directory: &Path, name: &str) -> PathBuf {
@@ -460,6 +510,27 @@ mod tests {
     fn rejects_mismatched_image_size() {
         assert!(validate_image_bytes(2, 2, 15).is_err());
         assert!(validate_image_bytes(2, 2, 16).is_ok());
+    }
+
+    #[test]
+    fn prune_staging_dir_removes_stale_batches() {
+        let root = std::env::temp_dir().join(format!("deskbridge-prune-{}", deskbridge_core::now_ms()));
+        let now_ms = 5_000_000_u128;
+        let fresh = root.join((now_ms - 1_000).to_string());
+        let stale = root.join("10");
+        let junk = root.join("not-a-timestamp");
+        fs::create_dir_all(&fresh).unwrap();
+        fs::create_dir_all(&stale).unwrap();
+        fs::create_dir_all(&junk).unwrap();
+
+        // "now" is just past the fresh batch but far beyond the stale one.
+        prune_staging_dir(&root, now_ms);
+
+        assert!(fresh.exists());
+        assert!(!stale.exists());
+        assert!(!junk.exists());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
