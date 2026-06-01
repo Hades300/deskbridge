@@ -71,6 +71,14 @@ enum Command {
         reverse_scroll: bool,
         #[arg(long)]
         remote_scroll_scale: Option<f64>,
+        /// Require the pointer to rest against a linked edge for this many
+        /// milliseconds before switching screens (0 = switch on contact).
+        #[arg(long)]
+        edge_switch_delay_ms: Option<u64>,
+        /// Suppress edge switching within this many pixels of a screen corner
+        /// (0 = disabled).
+        #[arg(long)]
+        edge_corner_size: Option<u32>,
     },
     /// Diagnose reachability and protocol handshake.
     Diag {
@@ -270,6 +278,8 @@ async fn main() -> Result<()> {
             debug_capture_log,
             reverse_scroll,
             remote_scroll_scale,
+            edge_switch_delay_ms,
+            edge_corner_size,
         } => {
             let config = load_config(config)?;
             let listen = config
@@ -302,6 +312,12 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .map(|cfg| cfg.clipboard.clone())
                 .unwrap_or_else(ClipboardConfig::default);
+            let edge_switch_delay_ms = edge_switch_delay_ms
+                .or_else(|| config.as_ref().map(|cfg| cfg.input.edge_switch_delay_ms))
+                .unwrap_or(0);
+            let edge_corner_size = edge_corner_size
+                .or_else(|| config.as_ref().map(|cfg| cfg.input.edge_corner_size))
+                .unwrap_or(0);
             server::run(server::ServerOptions {
                 listen,
                 name,
@@ -314,6 +330,8 @@ async fn main() -> Result<()> {
                 heartbeat_ms,
                 layout,
                 clipboard,
+                edge_switch_delay_ms,
+                edge_corner_size,
             })
             .await
         }

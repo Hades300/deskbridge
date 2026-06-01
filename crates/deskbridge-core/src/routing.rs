@@ -31,6 +31,9 @@ pub struct InputRouter {
     local_screen: String,
     active_screen: String,
     edge_threshold: u32,
+    switch_delay_ms: u128,
+    corner_size: u32,
+    pending_edge: Option<PendingEdge>,
     remote_pointer: Option<RemotePointer>,
 }
 
@@ -41,6 +44,14 @@ struct RemotePointer {
     local_edge: Edge,
     x: i32,
     y: i32,
+}
+
+/// Tracks a linked edge the local pointer is currently resting against while a
+/// configured switch delay has not yet elapsed.
+#[derive(Debug, Clone)]
+struct PendingEdge {
+    edge: Edge,
+    since_ms: u128,
 }
 
 impl InputRouter {
@@ -60,6 +71,9 @@ impl InputRouter {
             local_screen,
             layout,
             edge_threshold: 2,
+            switch_delay_ms: 0,
+            corner_size: 0,
+            pending_edge: None,
             remote_pointer: None,
         })
     }
@@ -73,9 +87,26 @@ impl InputRouter {
         self
     }
 
+    /// Require the pointer to rest against a linked edge for this many
+    /// milliseconds before the screen switches. `0` keeps the original
+    /// switch-on-contact behavior.
+    pub fn with_switch_delay_ms(mut self, switch_delay_ms: u64) -> Self {
+        self.switch_delay_ms = switch_delay_ms as u128;
+        self
+    }
+
+    /// Suppress edge switching when the pointer is within this many pixels of a
+    /// perpendicular edge (i.e. resting in a screen corner). `0` disables the
+    /// corner dead zone.
+    pub fn with_corner_size(mut self, corner_size: u32) -> Self {
+        self.corner_size = corner_size;
+        self
+    }
+
     pub fn release_to_local(&mut self) {
         self.active_screen.clone_from(&self.local_screen);
         self.remote_pointer = None;
+        self.pending_edge = None;
     }
 
     pub fn observe_local_pointer(&mut self, x: u32, y: u32) -> Option<RoutedInput> {
@@ -83,16 +114,27 @@ impl InputRouter {
     }
 
     pub fn observe_local_pointer_outcome(&mut self, x: u32, y: u32) -> RouteOutcome {
+        self.observe_local_pointer_outcome_at(x, y, crate::now_ms())
+    }
+
+    pub fn observe_local_pointer_outcome_at(&mut self, x: u32, y: u32, now_ms: u128) -> RouteOutcome {
         if self.active_screen != self.local_screen {
             return RouteOutcome::default();
         }
 
         let Some(edge) = self.edge_for_pointer(x, y) else {
+            self.pending_edge = None;
             return RouteOutcome::default();
         };
         let Some(transition) = self.layout.transition(&self.local_screen, edge, x, y) else {
+            self.pending_edge = None;
             return RouteOutcome::default();
         };
+
+        if self.switch_delay_ms > 0 && !self.dwell_satisfied(edge, now_ms) {
+            return RouteOutcome::default();
+        }
+        self.pending_edge = None;
         let (source_x, source_y) = self.edge_point(&self.local_screen, edge, x as i32, y as i32);
         let portal = PortalTransition {
             source_screen: self.local_screen.clone(),
@@ -265,8 +307,8 @@ impl InputRouter {
             return false;
         };
 
-        let next_x = pointer.x + *dx;
-        let next_y = pointer.y + *dy;
+        let next_x = pointer.x.saturating_add(*dx);
+        let next_y = pointer.y.saturating_add(*dy);
         let threshold = self.edge_threshold as i32;
 
         match pointer.return_edge {
@@ -326,6 +368,24 @@ impl InputRouter {
             .map(|screen| (screen.size.width as i32, screen.size.height as i32))
     }
 
+    /// Returns true once the pointer has rested against `edge` for at least the
+    /// configured switch delay. The first contact arms a timer and reports
+    /// `false`; later contacts on the same edge clear once the delay elapses.
+    fn dwell_satisfied(&mut self, edge: Edge, now_ms: u128) -> bool {
+        match &self.pending_edge {
+            Some(pending) if pending.edge == edge => {
+                now_ms.saturating_sub(pending.since_ms) >= self.switch_delay_ms
+            }
+            _ => {
+                self.pending_edge = Some(PendingEdge {
+                    edge,
+                    since_ms: now_ms,
+                });
+                false
+            }
+        }
+    }
+
     fn edge_for_pointer(&self, x: u32, y: u32) -> Option<Edge> {
         let screen = self
             .layout
@@ -335,17 +395,25 @@ impl InputRouter {
         let max_x = screen.size.width.saturating_sub(1);
         let max_y = screen.size.height.saturating_sub(1);
 
+        // A pointer parked in a corner is usually heading for a hot corner,
+        // Start menu, or window control rather than the neighboring screen, so
+        // suppress switching while it is within the configured corner zone.
+        let in_horizontal_corner =
+            x <= self.corner_size || max_x.saturating_sub(x) <= self.corner_size;
+        let in_vertical_corner =
+            y <= self.corner_size || max_y.saturating_sub(y) <= self.corner_size;
+
         if x <= self.edge_threshold {
-            return Some(Edge::Left);
+            return (!in_vertical_corner).then_some(Edge::Left);
         }
         if max_x.saturating_sub(x) <= self.edge_threshold {
-            return Some(Edge::Right);
+            return (!in_vertical_corner).then_some(Edge::Right);
         }
         if y <= self.edge_threshold {
-            return Some(Edge::Top);
+            return (!in_horizontal_corner).then_some(Edge::Top);
         }
         if max_y.saturating_sub(y) <= self.edge_threshold {
-            return Some(Edge::Bottom);
+            return (!in_horizontal_corner).then_some(Edge::Bottom);
         }
 
         None
@@ -538,6 +606,75 @@ mod tests {
             router.route_if_remote_active(InputEvent::MouseMove { dx: 1, dy: 0 }),
             None
         );
+    }
+
+    #[test]
+    fn switch_delay_requires_dwell_before_switching() {
+        let mut router = InputRouter::new(layout(), "windows")
+            .unwrap()
+            .with_switch_delay_ms(200);
+
+        // First contact arms the dwell timer but does not switch.
+        assert_eq!(
+            router.observe_local_pointer_outcome_at(1919, 540, 1_000).input,
+            None
+        );
+        assert_eq!(router.active_screen(), "windows");
+
+        // Still within the delay window: no switch yet.
+        assert_eq!(
+            router.observe_local_pointer_outcome_at(1919, 545, 1_100).input,
+            None
+        );
+        assert_eq!(router.active_screen(), "windows");
+
+        // Delay elapsed while resting on the edge: now it switches.
+        let routed = router
+            .observe_local_pointer_outcome_at(1919, 545, 1_250)
+            .input
+            .unwrap();
+        assert_eq!(router.active_screen(), "mac");
+        assert_eq!(routed.target_screen, "mac");
+    }
+
+    #[test]
+    fn leaving_edge_before_dwell_cancels_the_switch() {
+        let mut router = InputRouter::new(layout(), "windows")
+            .unwrap()
+            .with_switch_delay_ms(200);
+
+        assert_eq!(
+            router.observe_local_pointer_outcome_at(1919, 540, 1_000).input,
+            None
+        );
+        // Pointer moves back into the interior, cancelling the pending switch.
+        assert_eq!(
+            router.observe_local_pointer_outcome_at(900, 540, 1_100).input,
+            None
+        );
+        // Returning to the edge restarts the timer; an immediate read does not
+        // switch even though wall time has advanced past the original arm.
+        assert_eq!(
+            router.observe_local_pointer_outcome_at(1919, 540, 1_300).input,
+            None
+        );
+        assert_eq!(router.active_screen(), "windows");
+    }
+
+    #[test]
+    fn corner_dead_zone_suppresses_accidental_switch() {
+        let mut router = InputRouter::new(layout(), "windows")
+            .unwrap()
+            .with_corner_size(40);
+
+        // Top-right corner: on the right edge but also within the top corner
+        // zone, so it should not switch.
+        assert_eq!(router.observe_local_pointer(1919, 5), None);
+        assert_eq!(router.active_screen(), "windows");
+
+        // Mid-edge, clear of the corner: switches as usual.
+        let routed = router.observe_local_pointer(1919, 540).unwrap();
+        assert_eq!(routed.target_screen, "mac");
     }
 
     #[test]
