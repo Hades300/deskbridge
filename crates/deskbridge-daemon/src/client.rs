@@ -63,6 +63,13 @@ enum ClientSessionOutcome {
     Replaced,
 }
 
+/// Result of handling one inbound message: keep looping or stop the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InboundFlow {
+    Continue,
+    Stop(ClientSessionOutcome),
+}
+
 async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
     info!(server = %options.server, screen = options.name, "connecting");
     let mut stream = TcpStream::connect(options.server)
@@ -130,186 +137,165 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
 
     let session_result: Result<ClientSessionOutcome> = async {
         loop {
-        if let Some(msg) = deferred_inbound.take() {
-            let message = msg?;
-            last_rx = Instant::now();
-            match message {
-                Message::Ping(ping) => {
-                    write_frame(&mut writer, &Message::Pong(Pong {
-                        seq: ping.seq,
-                        sent_at_ms: ping.sent_at_ms,
-                    })).await?;
-                }
-                Message::Pong(pong) => {
-                    debug!(seq = pong.seq, "heartbeat acknowledged");
-                }
-                Message::Input(mut packet) => {
-                    let batch = coalesce_mouse_move_packet(packet, &mut inbound, &mut deferred_inbound);
-                    packet = batch.packet;
-                    let received_at_ms = deskbridge_core::now_ms();
-                    if options.reverse_scroll {
-                        reverse_scroll_event(&mut packet.event);
+            // Drain any message that a previous coalescing step pulled off the
+            // channel but did not consume, before waiting on new I/O.
+            let message = if let Some(msg) = deferred_inbound.take() {
+                msg?
+            } else {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        seq += 1;
+                        let ping = Message::Ping(Ping {
+                            seq,
+                            sent_at_ms: deskbridge_core::now_ms(),
+                        });
+                        debug!(seq, "sending heartbeat");
+                        write_frame(&mut writer, &ping).await?;
+                        continue;
                     }
-                    let apply_started = Instant::now();
-                    sink.apply(&packet).await?;
-                    let apply_duration_us = apply_started.elapsed().as_micros();
-                    let applied_at_ms = deskbridge_core::now_ms();
-                    write_input_acks(
-                        &mut writer,
-                        &batch.ack_seqs,
-                        received_at_ms,
-                        applied_at_ms,
-                        apply_duration_us,
-                    ).await?;
-                    received_events = received_events.saturating_add(batch.ack_seqs.len() as u64);
-                    debug_state.record_input(&packet.event, apply_duration_us, applied_at_ms);
-                    if batch.coalesced_count > 0 {
-                        debug_state.push(format!(
-                            "coalesced {} queued mouse moves",
-                            batch.coalesced_count
-                        ));
-                    }
-                    if options.max_events.is_some_and(|max_events| received_events >= max_events) {
-                        break Ok(ClientSessionOutcome::Ended);
-                    }
-                }
-                Message::Clipboard(packet) => {
-                    if let Some(runtime) = &clipboard_runtime {
-                        match runtime.apply_remote(packet).await {
-                            Ok(summary) => debug_state.push(format!("applied remote clipboard {summary}")),
-                            Err(err) => {
-                                debug_state.push(format!("remote clipboard apply failed: {err:#}"));
-                                warn!(error = %err, "remote clipboard apply failed");
-                            }
+                    _ = stale_check.tick() => {
+                        let silent_for = last_rx.elapsed();
+                        if silent_for > stale_after {
+                            anyhow::bail!(
+                                "server heartbeat stale: no inbound frame for {}ms; reconnecting",
+                                silent_for.as_millis()
+                            );
                         }
+                        continue;
+                    }
+                    packet = recv_clipboard(&mut clipboard_rx), if clipboard_rx.is_some() => {
+                        if let Some(packet) = packet {
+                            let summary = crate::clipboard::content_summary(&packet.content);
+                            write_frame(&mut writer, &Message::Clipboard(packet)).await?;
+                            debug_state.push(format!("sent clipboard {summary}"));
+                        }
+                        continue;
+                    }
+                    msg = inbound.recv() => {
+                        msg.ok_or_else(|| anyhow!("server reader stopped"))??
                     }
                 }
-                Message::PortalFlash(_) => {}
-                Message::DebugRequest(request) => {
-                    let response = handle_debug_request(request, sink.as_mut(), &mut debug_state).await;
-                    write_frame(&mut writer, &Message::DebugResponse(response)).await?;
-                }
-                Message::Status(status) => {
-                    warn!(kind = ?status.kind, message = status.message, "server status");
-                }
-                Message::Goodbye { reason } => {
-                    if reason == REPLACED_SESSION_REASON {
-                        break Ok(ClientSessionOutcome::Replaced);
-                    }
-                    break Err(anyhow!("server closed session: {reason}"));
-                }
-                other => debug!(message = ?other, "ignored message"),
-            }
-            continue;
-        }
+            };
 
-        tokio::select! {
-            _ = ticker.tick() => {
-                seq += 1;
-                let ping = Message::Ping(Ping {
-                    seq,
-                    sent_at_ms: deskbridge_core::now_ms(),
-                });
-                debug!(seq, "sending heartbeat");
-                write_frame(&mut writer, &ping).await?;
-            }
-            _ = stale_check.tick() => {
-                let silent_for = last_rx.elapsed();
-                if silent_for > stale_after {
-                    anyhow::bail!(
-                        "server heartbeat stale: no inbound frame for {}ms; reconnecting",
-                        silent_for.as_millis()
-                    );
-                }
-            }
-            packet = recv_clipboard(&mut clipboard_rx), if clipboard_rx.is_some() => {
-                if let Some(packet) = packet {
-                    let summary = crate::clipboard::content_summary(&packet.content);
-                    write_frame(&mut writer, &Message::Clipboard(packet)).await?;
-                    debug_state.push(format!("sent clipboard {summary}"));
-                }
-            }
-            msg = inbound.recv() => {
-                let message = msg
-                    .ok_or_else(|| anyhow!("server reader stopped"))??;
-                last_rx = Instant::now();
-                match message {
-                    Message::Ping(ping) => {
-                        write_frame(&mut writer, &Message::Pong(Pong {
-                            seq: ping.seq,
-                            sent_at_ms: ping.sent_at_ms,
-                        })).await?;
-                    }
-                    Message::Pong(pong) => {
-                        debug!(seq = pong.seq, "heartbeat acknowledged");
-                    }
-                    Message::Input(mut packet) => {
-                        let batch = coalesce_mouse_move_packet(packet, &mut inbound, &mut deferred_inbound);
-                        packet = batch.packet;
-                        let received_at_ms = deskbridge_core::now_ms();
-                        if options.reverse_scroll {
-                            reverse_scroll_event(&mut packet.event);
-                        }
-                        let apply_started = Instant::now();
-                        sink.apply(&packet).await?;
-                        let apply_duration_us = apply_started.elapsed().as_micros();
-                        let applied_at_ms = deskbridge_core::now_ms();
-                        write_input_acks(
-                            &mut writer,
-                            &batch.ack_seqs,
-                            received_at_ms,
-                            applied_at_ms,
-                            apply_duration_us,
-                        ).await?;
-                        received_events = received_events.saturating_add(batch.ack_seqs.len() as u64);
-                        debug_state.record_input(&packet.event, apply_duration_us, applied_at_ms);
-                        if batch.coalesced_count > 0 {
-                            debug_state.push(format!(
-                                "coalesced {} queued mouse moves",
-                                batch.coalesced_count
-                            ));
-                        }
-                        if options.max_events.is_some_and(|max_events| received_events >= max_events) {
-                            break Ok(ClientSessionOutcome::Ended);
-                        }
-                    }
-                    Message::Clipboard(packet) => {
-                        if let Some(runtime) = &clipboard_runtime {
-                            match runtime.apply_remote(packet).await {
-                                Ok(summary) => debug_state.push(format!("applied remote clipboard {summary}")),
-                                Err(err) => {
-                                    debug_state.push(format!("remote clipboard apply failed: {err:#}"));
-                                    warn!(error = %err, "remote clipboard apply failed");
-                                }
-                            }
-                        }
-                    }
-                    Message::PortalFlash(_) => {}
-                    Message::DebugRequest(request) => {
-                        let response = handle_debug_request(request, sink.as_mut(), &mut debug_state).await;
-                        write_frame(&mut writer, &Message::DebugResponse(response)).await?;
-                    }
-                    Message::Status(status) => {
-                        warn!(kind = ?status.kind, message = status.message, "server status");
-                    }
-                    Message::Goodbye { reason } => {
-                        if reason == REPLACED_SESSION_REASON {
-                            break Ok(ClientSessionOutcome::Replaced);
-                        }
-                        break Err(anyhow!("server closed session: {reason}"));
-                    }
-                    other => debug!(message = ?other, "ignored message"),
-                }
+            last_rx = Instant::now();
+            match process_inbound_message(
+                message,
+                &mut writer,
+                sink.as_mut(),
+                options,
+                &clipboard_runtime,
+                &mut inbound,
+                &mut deferred_inbound,
+                &mut debug_state,
+                &mut received_events,
+            )
+            .await?
+            {
+                InboundFlow::Continue => {}
+                InboundFlow::Stop(outcome) => break Ok(outcome),
             }
         }
     }
-    }.await;
+    .await;
 
     if let Err(err) = sink.release_all().await {
         warn!(error = %err, "failed to release pressed inputs after client session");
     }
 
     session_result
+}
+
+/// Handle a single inbound message. Both the deferred-message path and the
+/// freshly-received path share this logic so they cannot drift apart.
+#[allow(clippy::too_many_arguments)]
+async fn process_inbound_message<W>(
+    message: Message,
+    writer: &mut W,
+    sink: &mut dyn InputSink,
+    options: &ClientOptions,
+    clipboard_runtime: &Option<crate::clipboard::ClipboardRuntime>,
+    inbound: &mut mpsc::UnboundedReceiver<Result<Message, FrameError>>,
+    deferred_inbound: &mut Option<Result<Message, FrameError>>,
+    debug_state: &mut ClientDebugState,
+    received_events: &mut u64,
+) -> Result<InboundFlow>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    match message {
+        Message::Ping(ping) => {
+            write_frame(
+                writer,
+                &Message::Pong(Pong {
+                    seq: ping.seq,
+                    sent_at_ms: ping.sent_at_ms,
+                }),
+            )
+            .await?;
+        }
+        Message::Pong(pong) => {
+            debug!(seq = pong.seq, "heartbeat acknowledged");
+        }
+        Message::Input(packet) => {
+            let batch = coalesce_mouse_move_packet(packet, inbound, deferred_inbound);
+            let mut packet = batch.packet;
+            let received_at_ms = deskbridge_core::now_ms();
+            if options.reverse_scroll {
+                reverse_scroll_event(&mut packet.event);
+            }
+            let apply_started = Instant::now();
+            sink.apply(&packet).await?;
+            let apply_duration_us = apply_started.elapsed().as_micros();
+            let applied_at_ms = deskbridge_core::now_ms();
+            write_input_acks(
+                writer,
+                &batch.ack_seqs,
+                received_at_ms,
+                applied_at_ms,
+                apply_duration_us,
+            )
+            .await?;
+            *received_events = received_events.saturating_add(batch.ack_seqs.len() as u64);
+            debug_state.record_input(&packet.event, apply_duration_us, applied_at_ms);
+            if batch.coalesced_count > 0 {
+                debug_state.push(format!("coalesced {} queued mouse moves", batch.coalesced_count));
+            }
+            if options
+                .max_events
+                .is_some_and(|max_events| *received_events >= max_events)
+            {
+                return Ok(InboundFlow::Stop(ClientSessionOutcome::Ended));
+            }
+        }
+        Message::Clipboard(packet) => {
+            if let Some(runtime) = clipboard_runtime {
+                match runtime.apply_remote(packet).await {
+                    Ok(summary) => debug_state.push(format!("applied remote clipboard {summary}")),
+                    Err(err) => {
+                        debug_state.push(format!("remote clipboard apply failed: {err:#}"));
+                        warn!(error = %err, "remote clipboard apply failed");
+                    }
+                }
+            }
+        }
+        Message::PortalFlash(_) => {}
+        Message::DebugRequest(request) => {
+            let response = handle_debug_request(request, sink, debug_state).await;
+            write_frame(writer, &Message::DebugResponse(response)).await?;
+        }
+        Message::Status(status) => {
+            warn!(kind = ?status.kind, message = status.message, "server status");
+        }
+        Message::Goodbye { reason } => {
+            if reason == REPLACED_SESSION_REASON {
+                return Ok(InboundFlow::Stop(ClientSessionOutcome::Replaced));
+            }
+            return Err(anyhow!("server closed session: {reason}"));
+        }
+        other => debug!(message = ?other, "ignored message"),
+    }
+
+    Ok(InboundFlow::Continue)
 }
 
 async fn recv_clipboard(
