@@ -55,7 +55,9 @@ DeskBridge is not wire-compatible with Input Leap, Barrier, or Synergy. Run Desk
 
 - Native-feel macOS status app and Windows WPF admin panel.
 - Rust daemon and protocol core with explicit heartbeats, stale-connection detection, and reconnect loops.
+- Zero-config LAN discovery: servers advertise over mDNS so clients can find them without typing an IP.
 - Configurable screen layout, including edge-based routing between machines with different display sizes.
+- Edge anti-misfire guards: optional dwell delay and corner dead zone to stop accidental screen switches.
 - Shared clipboard for text, images, and regular files.
 - Remote diagnostics for display info, peer metadata, target logs, server logs, route probes, capture probes, and performance counters.
 - Runtime controls for reverse scrolling and remote wheel speed.
@@ -120,6 +122,20 @@ Run a server:
 ```bash
 deskbridge server --listen 0.0.0.0:24800 --name windows --allow mac --capture
 deskbridge server --config examples/deskbridge.json --capture
+```
+
+Reduce accidental edge switches by requiring a short dwell at the edge and a corner dead zone:
+
+```bash
+deskbridge server --listen 0.0.0.0:24800 --name windows --allow mac --capture \
+  --edge-switch-delay-ms 120 --edge-corner-size 40
+```
+
+Find servers on the local network without knowing their address:
+
+```bash
+deskbridge discover
+deskbridge discover --timeout-ms 3000
 ```
 
 Run a client:

@@ -20,6 +20,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+mdns-sd = "0.20.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

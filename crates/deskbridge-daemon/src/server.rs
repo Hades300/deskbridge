@@ -483,6 +483,35 @@ pub async fn run(options: ServerOptions) -> Result<()> {
         start_platform_capture(capture_tx.clone())?;
     }
 
+    // Advertise on the LAN so clients can discover this server without anyone
+    // typing an IP address. Discovery is best-effort: failures (e.g. no
+    // multicast-capable interface) must not stop the server from listening.
+    let advertise_port = listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .unwrap_or_else(|_| options.listen.port());
+    let _discovery = match crate::discovery::register(&options.name, advertise_port) {
+        Ok(handle) => {
+            info!(port = advertise_port, "advertising DeskBridge over mDNS");
+            push_server_log(
+                &server_log,
+                format!(
+                    "mDNS advertising screen={} port={advertise_port}",
+                    options.name
+                ),
+            );
+            Some(handle)
+        }
+        Err(err) => {
+            warn!(error = %err, "mDNS advertising unavailable; clients must connect by address");
+            push_server_log(
+                &server_log,
+                format!("mDNS advertising unavailable: {err:#}"),
+            );
+            None
+        }
+    };
+
     info!(listen = %options.listen, "server listening");
     push_server_log(
         &server_log,
