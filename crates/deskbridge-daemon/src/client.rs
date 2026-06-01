@@ -258,7 +258,10 @@ where
             *received_events = received_events.saturating_add(batch.ack_seqs.len() as u64);
             debug_state.record_input(&packet.event, apply_duration_us, applied_at_ms);
             if batch.coalesced_count > 0 {
-                debug_state.push(format!("coalesced {} queued mouse moves", batch.coalesced_count));
+                debug_state.push(format!(
+                    "coalesced {} queued mouse moves",
+                    batch.coalesced_count
+                ));
             }
             if options
                 .max_events

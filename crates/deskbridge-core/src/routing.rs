@@ -117,7 +117,12 @@ impl InputRouter {
         self.observe_local_pointer_outcome_at(x, y, crate::now_ms())
     }
 
-    pub fn observe_local_pointer_outcome_at(&mut self, x: u32, y: u32, now_ms: u128) -> RouteOutcome {
+    pub fn observe_local_pointer_outcome_at(
+        &mut self,
+        x: u32,
+        y: u32,
+        now_ms: u128,
+    ) -> RouteOutcome {
         if self.active_screen != self.local_screen {
             return RouteOutcome::default();
         }
@@ -616,14 +621,18 @@ mod tests {
 
         // First contact arms the dwell timer but does not switch.
         assert_eq!(
-            router.observe_local_pointer_outcome_at(1919, 540, 1_000).input,
+            router
+                .observe_local_pointer_outcome_at(1919, 540, 1_000)
+                .input,
             None
         );
         assert_eq!(router.active_screen(), "windows");
 
         // Still within the delay window: no switch yet.
         assert_eq!(
-            router.observe_local_pointer_outcome_at(1919, 545, 1_100).input,
+            router
+                .observe_local_pointer_outcome_at(1919, 545, 1_100)
+                .input,
             None
         );
         assert_eq!(router.active_screen(), "windows");
@@ -644,18 +653,24 @@ mod tests {
             .with_switch_delay_ms(200);
 
         assert_eq!(
-            router.observe_local_pointer_outcome_at(1919, 540, 1_000).input,
+            router
+                .observe_local_pointer_outcome_at(1919, 540, 1_000)
+                .input,
             None
         );
         // Pointer moves back into the interior, cancelling the pending switch.
         assert_eq!(
-            router.observe_local_pointer_outcome_at(900, 540, 1_100).input,
+            router
+                .observe_local_pointer_outcome_at(900, 540, 1_100)
+                .input,
             None
         );
         // Returning to the edge restarts the timer; an immediate read does not
         // switch even though wall time has advanced past the original arm.
         assert_eq!(
-            router.observe_local_pointer_outcome_at(1919, 540, 1_300).input,
+            router
+                .observe_local_pointer_outcome_at(1919, 540, 1_300)
+                .input,
             None
         );
         assert_eq!(router.active_screen(), "windows");

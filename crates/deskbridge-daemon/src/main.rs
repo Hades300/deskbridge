@@ -4,6 +4,7 @@ mod client;
 mod clipboard;
 mod debugctl;
 mod diag;
+mod discovery;
 mod input;
 mod perf;
 mod permissions;
@@ -149,6 +150,12 @@ enum Command {
     InitConfig {
         #[arg(long, default_value = "deskbridge.json")]
         path: PathBuf,
+    },
+    /// Browse the local network for DeskBridge servers advertised over mDNS.
+    Discover {
+        /// How long to listen for advertisements, in milliseconds.
+        #[arg(long, default_value_t = 2000)]
+        timeout_ms: u64,
     },
 }
 
@@ -460,6 +467,22 @@ async fn main() -> Result<()> {
         Command::InitConfig { path } => {
             DeskBridgeConfig::default().save(&path)?;
             println!("wrote {}", path.display());
+            Ok(())
+        }
+        Command::Discover { timeout_ms } => {
+            let servers = discovery::discover(Duration::from_millis(timeout_ms))?;
+            if servers.is_empty() {
+                println!("no DeskBridge servers found on the local network");
+            } else {
+                for server in servers {
+                    match server.version {
+                        Some(version) => {
+                            println!("{}\t{}\tv{}", server.name, server.addr, version)
+                        }
+                        None => println!("{}\t{}", server.name, server.addr),
+                    }
+                }
+            }
             Ok(())
         }
     }

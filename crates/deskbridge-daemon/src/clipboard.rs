@@ -514,7 +514,8 @@ mod tests {
 
     #[test]
     fn prune_staging_dir_removes_stale_batches() {
-        let root = std::env::temp_dir().join(format!("deskbridge-prune-{}", deskbridge_core::now_ms()));
+        let root =
+            std::env::temp_dir().join(format!("deskbridge-prune-{}", deskbridge_core::now_ms()));
         let now_ms = 5_000_000_u128;
         let fresh = root.join((now_ms - 1_000).to_string());
         let stale = root.join("10");
