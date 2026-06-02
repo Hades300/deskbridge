@@ -26,6 +26,24 @@ enum LayoutPreviewEdge: String {
     }
 }
 
+/// A DeskBridge server found on the local network via mDNS.
+struct DiscoveredServer: Identifiable, Equatable {
+    let name: String
+    let address: String
+    let version: String?
+
+    var id: String { address }
+}
+
+/// State of the interactive pairing flow driven by `deskbridge pair`.
+enum PairingPhase: Equatable {
+    case idle
+    case connecting
+    case awaitingConfirmation(code: String)
+    case succeeded(server: String)
+    case failed(message: String)
+}
+
 @MainActor
 final class DeskBridgeModel: ObservableObject {
     @Published var mode: DeskBridgeMode
@@ -49,6 +67,10 @@ final class DeskBridgeModel: ObservableObject {
     @Published var lastDiagnostics: String = "No diagnostics yet."
     @Published var lastLogLine: String = ""
 
+    @Published var discoveredServers: [DiscoveredServer] = []
+    @Published var isDiscovering: Bool = false
+    @Published var pairingPhase: PairingPhase = .idle
+
     let localDisplayWidth: Double
     let localDisplayHeight: Double
     let peerDisplayWidth: Double = 1920
@@ -62,6 +84,10 @@ final class DeskBridgeModel: ObservableObject {
     private var lastStatusProbeAt = Date.distantPast
     private let defaults = UserDefaults.standard
     private let shouldStayConnectedKey = "shouldStayConnected"
+
+    private var pairingProcess: Process?
+    private var pairingInput: FileHandle?
+    private var pairingBuffer = ""
 
     init() {
         mode = DeskBridgeMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .client
@@ -335,6 +361,159 @@ final class DeskBridgeModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    // MARK: - Discovery and pairing
+
+    /// Browse the local network for servers advertised over mDNS.
+    func discoverServers() {
+        guard !isDiscovering else { return }
+        isDiscovering = true
+        discoveredServers = []
+        let binary = binaryPath
+
+        Task { @MainActor in
+            let output = await Task.detached {
+                runDeskBridgeProcess(binary: binary, arguments: ["discover", "--timeout-ms", "2500"])
+            }.value
+            self.discoveredServers = Self.parseDiscoverOutput(output)
+            self.isDiscovering = false
+        }
+    }
+
+    static func parseDiscoverOutput(_ output: String) -> [DiscoveredServer] {
+        var servers: [DiscoveredServer] = []
+        for raw in output.split(whereSeparator: \.isNewline) {
+            let line = String(raw).trimmingCharacters(in: .whitespaces)
+            let parts = line.split(separator: "\t").map(String.init)
+            guard parts.count >= 2, parts[1].contains(":") else { continue }
+            let version = parts.count >= 3 ? String(parts[2]) : nil
+            servers.append(DiscoveredServer(name: parts[0], address: parts[1], version: version))
+        }
+        return servers
+    }
+
+    /// Start interactive pairing as the joining device. The host shows a code
+    /// too; the user confirms the codes match before the secret is exchanged.
+    func startPairing(with address: String) {
+        cancelPairing()
+        let normalized = address.contains(":") ? address : "\(address):24800"
+        createSupportDirectory()
+        pairingBuffer = ""
+        pairingPhase = .connecting
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binaryPath)
+        process.arguments = ["pair", "--join", normalized, "--config", configPath.path]
+
+        let outPipe = Pipe()
+        let inPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = outPipe
+        process.standardInput = inPipe
+        pairingInput = inPipe.fileHandleForWriting
+
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            Task { @MainActor [weak self] in
+                self?.consumePairingOutput(text, server: normalized)
+            }
+        }
+
+        process.terminationHandler = { [weak self] finished in
+            Task { @MainActor [weak self] in
+                self?.handlePairingTermination(finished, server: normalized)
+            }
+        }
+
+        do {
+            try process.run()
+            pairingProcess = process
+        } catch {
+            pairingPhase = .failed(message: error.localizedDescription)
+            pairingInput = nil
+        }
+    }
+
+    /// The user confirmed the codes match: let the host send the secret.
+    func confirmPairing() {
+        guard case .awaitingConfirmation = pairingPhase, let input = pairingInput else { return }
+        try? input.write(contentsOf: Data("y\n".utf8))
+    }
+
+    /// Abort an in-progress pairing (or dismiss a finished one).
+    func cancelPairing() {
+        if let input = pairingInput {
+            try? input.write(contentsOf: Data("n\n".utf8))
+        }
+        pairingProcess?.terminationHandler = nil
+        if pairingProcess?.isRunning == true {
+            pairingProcess?.terminate()
+        }
+        pairingProcess = nil
+        pairingInput = nil
+        pairingBuffer = ""
+        if case .succeeded = pairingPhase {
+            // Keep the success state visible until the sheet is dismissed.
+        } else {
+            pairingPhase = .idle
+        }
+    }
+
+    private func consumePairingOutput(_ text: String, server: String) {
+        pairingBuffer += text
+
+        if case .awaitingConfirmation = pairingPhase {
+            // Already showing the code; just watch for completion below.
+        } else if let code = Self.extractPairingCode(pairingBuffer) {
+            pairingPhase = .awaitingConfirmation(code: code)
+        }
+
+        if pairingBuffer.localizedCaseInsensitiveContains("Paired.") {
+            adoptPairedServer(server)
+        }
+    }
+
+    private func handlePairingTermination(_ finished: Process, server: String) {
+        guard pairingProcess === finished else { return }
+        pairingProcess = nil
+        pairingInput = nil
+
+        if pairingBuffer.localizedCaseInsensitiveContains("Paired.") {
+            adoptPairedServer(server)
+        } else if case .succeeded = pairingPhase {
+            // Already succeeded.
+        } else {
+            let reason = Self.lastMeaningfulLine(pairingBuffer) ?? "Pairing did not complete."
+            pairingPhase = .failed(message: reason)
+        }
+    }
+
+    private func adoptPairedServer(_ server: String) {
+        pairingPhase = .succeeded(server: server)
+        self.server = server
+        mode = .client
+        save()
+    }
+
+    static func extractPairingCode(_ buffer: String) -> String? {
+        for raw in buffer.split(whereSeparator: \.isNewline) {
+            let line = String(raw)
+            guard let range = line.range(of: "Pairing code:") else { continue }
+            let code = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            if !code.isEmpty {
+                return code
+            }
+        }
+        return nil
+    }
+
+    static func lastMeaningfulLine(_ buffer: String) -> String? {
+        buffer
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .last { !$0.isEmpty }
+    }
+
     private var currentConnectedStatus: String {
         mode == .server ? "Server running" : "Connected"
     }
@@ -365,12 +544,15 @@ final class DeskBridgeModel: ObservableObject {
 
         terminateStaleDaemonProcesses(argumentsContain: " client")
 
-        let arguments = [
+        var arguments = [
             "client",
             "--server", normalizedServerAddress,
             "--name", screenName,
             "--reconnect",
         ]
+        if let secret = configuredSecret() {
+            arguments.append(contentsOf: ["--psk", secret])
+        }
 
         launchDaemon(arguments: arguments, launchingStatus: "Connecting")
     }
@@ -668,6 +850,19 @@ final class DeskBridgeModel: ObservableObject {
         lastLogLine = "Stopped stale DeskBridge daemon process: \(pidList)"
     }
 
+    /// Read the pairing secret persisted in the config, if any.
+    func configuredSecret() -> String? {
+        guard let data = try? Data(contentsOf: configPath),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let security = object["security"] as? [String: Any],
+              let psk = security["psk"] as? String,
+              !psk.isEmpty
+        else {
+            return nil
+        }
+        return psk
+    }
+
     private func writeGeneratedConfig() throws {
         createSupportDirectory()
 
@@ -686,7 +881,10 @@ final class DeskBridgeModel: ObservableObject {
             ? ["width": Int(peerDisplayWidth), "height": Int(peerDisplayHeight)]
             : ["width": Int(localDisplayWidth), "height": Int(localDisplayHeight)]
 
-        let config: [String: Any] = [
+        // Preserve a paired secret across config regenerations.
+        let existingSecret = configuredSecret()
+
+        var config: [String: Any] = [
             "server": [
                 "name": serverScreenName,
                 "listen": listenAddress,
@@ -734,6 +932,10 @@ final class DeskBridgeModel: ObservableObject {
                 "max_transfer_bytes": 33_554_432,
             ],
         ]
+
+        if let secret = existingSecret {
+            config["security"] = ["psk": secret]
+        }
 
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: configPath, options: .atomic)
