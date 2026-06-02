@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeskBridge</title>
+    <style>
+      :root {
+        --bg: #16181d;
+        --bg-2: #1b1e24;
+        --surface: rgba(255, 255, 255, 0.04);
+        --surface-2: rgba(255, 255, 255, 0.06);
+        --hairline: rgba(255, 255, 255, 0.08);
+        --text: #e9edf2;
+        --muted: #9aa3ad;
+        --accent: #ccf26b;
+        --accent-ink: #1b2206;
+        --success: #6fd778;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: radial-gradient(1200px 600px at 80% -10%, #20242c 0%, var(--bg) 60%);
+        color: var(--text);
+        -webkit-font-smoothing: antialiased;
+        padding: 28px 26px 32px;
+      }
+      .app { max-width: 760px; margin: 0 auto; }
+      header {
+        display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
+      }
+      .logo {
+        width: 40px; height: 40px; border-radius: 11px;
+        background: linear-gradient(135deg, var(--accent), #9bd13f);
+        display: grid; place-items: center; color: var(--accent-ink);
+        font-weight: 800; font-size: 20px;
+        box-shadow: 0 6px 20px rgba(204, 242, 107, 0.25);
+      }
+      h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -0.2px; }
+      .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+      .pills { margin-left: auto; display: flex; gap: 8px; }
+      .pill {
+        font-size: 11.5px; color: var(--muted); padding: 5px 11px;
+        background: var(--surface); border: 1px solid var(--hairline);
+        border-radius: 999px; display: inline-flex; align-items: center; gap: 6px;
+      }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+      .card {
+        background: var(--surface); border: 1px solid var(--hairline);
+        border-radius: 14px; padding: 18px; margin-bottom: 16px;
+      }
+      .card h2 {
+        font-size: 13px; font-weight: 600; color: var(--muted);
+        text-transform: uppercase; letter-spacing: 0.6px; margin: 0 0 14px;
+      }
+      .row { display: flex; align-items: center; gap: 12px; }
+      .grow { flex: 1; }
+      button {
+        font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+        border-radius: 9px; padding: 8px 14px; border: 1px solid var(--hairline);
+        background: var(--surface-2); color: var(--text); transition: all 0.12s ease;
+      }
+      button:hover { background: rgba(255, 255, 255, 0.10); }
+      button.primary {
+        background: var(--accent); color: var(--accent-ink); border-color: transparent;
+      }
+      button.primary:hover { filter: brightness(1.05); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .server {
+        display: flex; align-items: center; gap: 12px; padding: 12px;
+        border: 1px solid var(--hairline); border-radius: 11px; background: var(--surface-2);
+        margin-top: 10px;
+      }
+      .server .icon {
+        width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+        background: rgba(204, 242, 107, 0.12); color: var(--accent); font-size: 16px;
+      }
+      .server .name { font-weight: 600; font-size: 14px; }
+      .server .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+      .server .ver { font-size: 11px; color: var(--muted); padding: 3px 8px; background: var(--surface); border-radius: 999px; }
+      .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 22px; }
+      .muted { color: var(--muted); }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <div class="logo">D</div>
+        <div>
+          <h1>DeskBridge</h1>
+          <div class="sub">Cross-platform control panel · preview</div>
+        </div>
+        <div class="pills">
+          <span class="pill"><span class="dot"></span> <span id="status">Ready</span></span>
+          <span class="pill mono" id="versions">…</span>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>Find a server</h2>
+        <div class="row">
+          <div class="grow muted" id="scan-hint">Servers on your network appear here.</div>
+          <button class="primary" id="scan">Scan</button>
+        </div>
+        <div id="servers"></div>
+      </section>
+
+      <section class="card">
+        <h2>About</h2>
+        <div class="muted">
+          This window is a Tauri preview of a single cross-platform UI. It drives the
+          verified <span class="mono">deskbridge</span> daemon; pairing, layout, and
+          status move here next.
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+      const $ = (id) => document.getElementById(id);
+
+      async function loadVersions() {
+        try {
+          const app = await invoke("app_version");
+          let daemon = "—";
+          try { daemon = (await invoke("daemon_version")).split("\n")[0]; } catch (_) {}
+          $("versions").textContent = `ui ${app}`;
+          $("versions").title = daemon;
+        } catch (e) {
+          $("versions").textContent = "ui ?";
+        }
+      }
+
+      async function scan() {
+        const btn = $("scan");
+        btn.disabled = true;
+        btn.textContent = "Scanning…";
+        $("scan-hint").textContent = "Looking for servers…";
+        try {
+          const servers = await invoke("discover_servers");
+          renderServers(servers);
+        } catch (e) {
+          $("servers").innerHTML = "";
+          $("scan-hint").textContent = "Scan failed: " + e;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Scan";
+        }
+      }
+
+      function renderServers(servers) {
+        const host = $("servers");
+        host.innerHTML = "";
+        if (!servers || servers.length === 0) {
+          $("scan-hint").textContent = "No servers found yet.";
+          host.innerHTML = '<div class="empty">Make sure the other device is running DeskBridge on this network.</div>';
+          return;
+        }
+        $("scan-hint").textContent = servers.length + " found";
+        for (const s of servers) {
+          const el = document.createElement("div");
+          el.className = "server";
+          el.innerHTML =
+            '<div class="icon">🖥️</div>' +
+            '<div class="grow"><div class="name"></div><div class="addr"></div></div>' +
+            (s.version ? '<div class="ver"></div>' : "");
+          el.querySelector(".name").textContent = s.name;
+          el.querySelector(".addr").textContent = s.address;
+          if (s.version) el.querySelector(".ver").textContent = s.version;
+          host.appendChild(el);
+        }
+      }
+
+      $("scan").addEventListener("click", scan);
+      loadVersions();
+    </script>
+  </body>
+</html>

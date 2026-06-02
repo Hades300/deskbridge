@@ -92,6 +92,38 @@ jobs:
           name: DeskBridge.app
           path: build/DeskBridge.app
 
+  tauri-desktop:
+    name: Tauri desktop
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            libssl-dev \
+            file
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Build desktop app
+        working-directory: apps/desktop/src-tauri
+        run: cargo build
+
+      - name: Clippy desktop app
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
   loopback:
     name: Protocol loopback
     runs-on: macos-latest

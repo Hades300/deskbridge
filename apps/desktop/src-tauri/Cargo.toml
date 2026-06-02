@@ -1,0 +1,24 @@
+[package]
+name = "deskbridge-desktop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "DeskBridge cross-platform desktop control panel"
+license = "MIT"
+
+# Standalone workspace so the root Cargo workspace (core + daemon) ignores this
+# crate; the Tauri app is built only by its own CI job, which has the required
+# system webview libraries.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "deskbridge-desktop"
+path = "src/main.rs"
