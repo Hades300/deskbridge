@@ -158,6 +158,7 @@ impl Default for DeskBridgeConfig {
                             height: 1080,
                         },
                         origin: None,
+                        monitors: Vec::new(),
                     },
                     Screen {
                         name: "mac".to_string(),
@@ -166,6 +167,7 @@ impl Default for DeskBridgeConfig {
                             height: 1117,
                         },
                         origin: None,
+                        monitors: Vec::new(),
                     },
                 ],
                 links: vec![Link {
