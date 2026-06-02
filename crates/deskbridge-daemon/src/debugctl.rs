@@ -1,13 +1,19 @@
 use anyhow::{Context, Result, anyhow};
+use deskbridge_core::secure::{recv, send};
 use deskbridge_core::{
-    DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, Hello, Message, read_frame,
-    write_frame,
+    DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, Encryption, Hello, Message,
+    client_handshake,
 };
 use std::{net::SocketAddr, time::Duration};
 use tokio::{net::TcpStream, time::timeout};
 use uuid::Uuid;
 
-pub async fn run(server: SocketAddr, target: String, command: DebugCommand) -> Result<()> {
+pub async fn run(
+    server: SocketAddr,
+    target: String,
+    command: DebugCommand,
+    psk: Option<String>,
+) -> Result<()> {
     println!("DeskBridge debug");
     println!("local_version: {}", crate::build_info::version());
     println!("local_platform: {}", crate::build_info::platform());
@@ -20,8 +26,23 @@ pub async fn run(server: SocketAddr, target: String, command: DebugCommand) -> R
         .context("tcp connect failed")?;
     let mut stream = stream;
 
-    write_frame(
+    let enc = match psk.as_deref() {
+        Some(secret) if !secret.is_empty() => {
+            let session = timeout(
+                Duration::from_secs(3),
+                client_handshake(&mut stream, secret),
+            )
+            .await
+            .context("PSK handshake timed out")?
+            .context("PSK handshake failed (check the secret matches the server)")?;
+            Encryption::secure(session)
+        }
+        _ => Encryption::Plain,
+    };
+
+    send(
         &mut stream,
+        &enc,
         &Message::Hello(Hello::diagnostic(target).with_app_metadata(
             crate::build_info::version(),
             crate::build_info::platform(),
@@ -29,7 +50,7 @@ pub async fn run(server: SocketAddr, target: String, command: DebugCommand) -> R
         )),
     )
     .await?;
-    match timeout(Duration::from_secs(3), read_frame(&mut stream)).await {
+    match timeout(Duration::from_secs(3), recv(&mut stream, &enc)).await {
         Ok(Ok(Message::Welcome(welcome))) => {
             println!("server_name: {}", welcome.server_name);
             println!("session_id: {}", welcome.session_id);
@@ -43,8 +64,9 @@ pub async fn run(server: SocketAddr, target: String, command: DebugCommand) -> R
     }
 
     let request_id = Uuid::new_v4();
-    write_frame(
+    send(
         &mut stream,
+        &enc,
         &Message::DebugRequest(DebugRequest {
             request_id,
             command,
@@ -52,7 +74,7 @@ pub async fn run(server: SocketAddr, target: String, command: DebugCommand) -> R
     )
     .await?;
 
-    match timeout(Duration::from_secs(5), read_frame(&mut stream)).await {
+    match timeout(Duration::from_secs(5), recv(&mut stream, &enc)).await {
         Ok(Ok(Message::DebugResponse(response))) if response.request_id == request_id => {
             print_response(response);
             Ok(())

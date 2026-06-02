@@ -51,6 +51,10 @@ enum Command {
         max_events: Option<u64>,
         #[arg(long)]
         stale_after_ms: Option<u64>,
+        /// Shared secret for an authenticated, encrypted session. Must match the
+        /// server. Can also be set via DESKBRIDGE_PSK.
+        #[arg(long, env = "DESKBRIDGE_PSK")]
+        psk: Option<String>,
     },
     /// Run a server that accepts clients and can emit demo input events.
     Server {
@@ -80,6 +84,10 @@ enum Command {
         /// (0 = disabled).
         #[arg(long)]
         edge_corner_size: Option<u32>,
+        /// Shared secret required of every client for an authenticated,
+        /// encrypted session. Can also be set via DESKBRIDGE_PSK.
+        #[arg(long, env = "DESKBRIDGE_PSK")]
+        psk: Option<String>,
     },
     /// Diagnose reachability and protocol handshake.
     Diag {
@@ -89,6 +97,8 @@ enum Command {
         server: Option<SocketAddr>,
         #[arg(long, default_value = "mac")]
         name: String,
+        #[arg(long, env = "DESKBRIDGE_PSK")]
+        psk: Option<String>,
     },
     /// Send a debug command through the server to a connected client.
     Debug {
@@ -100,6 +110,8 @@ enum Command {
         name: String,
         #[command(subcommand)]
         command: DebugCliCommand,
+        #[arg(long, env = "DESKBRIDGE_PSK")]
+        psk: Option<String>,
     },
     /// Simulate a configured edge crossing and continued remote mouse movement.
     SimulateRoute {
@@ -233,6 +245,7 @@ async fn main() -> Result<()> {
             once,
             max_events,
             stale_after_ms,
+            psk,
         } => {
             let config = load_config(config)?;
             let server = server
@@ -262,6 +275,7 @@ async fn main() -> Result<()> {
             if dry_run {
                 clipboard.enabled = false;
             }
+            let psk = resolve_psk(psk, config.as_ref());
             client::run(client::ClientOptions {
                 server,
                 name,
@@ -272,6 +286,7 @@ async fn main() -> Result<()> {
                 stale_after_ms,
                 max_events,
                 clipboard,
+                psk,
             })
             .await
         }
@@ -287,6 +302,7 @@ async fn main() -> Result<()> {
             remote_scroll_scale,
             edge_switch_delay_ms,
             edge_corner_size,
+            psk,
         } => {
             let config = load_config(config)?;
             let listen = config
@@ -325,6 +341,7 @@ async fn main() -> Result<()> {
             let edge_corner_size = edge_corner_size
                 .or_else(|| config.as_ref().map(|cfg| cfg.input.edge_corner_size))
                 .unwrap_or(0);
+            let psk = resolve_psk(psk, config.as_ref());
             server::run(server::ServerOptions {
                 listen,
                 name,
@@ -339,6 +356,7 @@ async fn main() -> Result<()> {
                 clipboard,
                 edge_switch_delay_ms,
                 edge_corner_size,
+                psk,
             })
             .await
         }
@@ -346,6 +364,7 @@ async fn main() -> Result<()> {
             config,
             server,
             name,
+            psk,
         } => {
             let config = load_config(config)?;
             let server = server
@@ -359,13 +378,15 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .map(|cfg| cfg.client.name.clone())
                 .unwrap_or(name);
-            diag::run(server, name).await
+            let psk = resolve_psk(psk, config.as_ref());
+            diag::run(server, name, psk).await
         }
         Command::Debug {
             config,
             server,
             name,
             command,
+            psk,
         } => {
             let config = load_config(config)?;
             let server = server
@@ -379,7 +400,14 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .map(|cfg| cfg.client.name.clone())
                 .unwrap_or(name);
-            debugctl::run(server, name, debug_cli_command(command, config.as_ref())).await
+            let psk = resolve_psk(psk, config.as_ref());
+            debugctl::run(
+                server,
+                name,
+                debug_cli_command(command, config.as_ref()),
+                psk,
+            )
+            .await
         }
         Command::SimulateRoute {
             config,
@@ -540,6 +568,13 @@ fn debug_cli_command(command: DebugCliCommand, config: Option<&DeskBridgeConfig>
             dy,
         },
     }
+}
+
+/// Resolve the shared secret: an explicit flag/env wins, otherwise fall back to
+/// the config file. Empty strings are treated as "no secret" (plaintext).
+fn resolve_psk(flag: Option<String>, config: Option<&DeskBridgeConfig>) -> Option<String> {
+    flag.or_else(|| config.and_then(|cfg| cfg.security.psk.clone()))
+        .filter(|psk| !psk.is_empty())
 }
 
 fn load_config(path: Option<PathBuf>) -> Result<Option<DeskBridgeConfig>> {

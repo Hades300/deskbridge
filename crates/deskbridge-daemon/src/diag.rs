@@ -1,9 +1,10 @@
 use anyhow::{Context, Result, anyhow};
-use deskbridge_core::{Hello, Message, read_frame, write_frame};
+use deskbridge_core::secure::{recv, send};
+use deskbridge_core::{Encryption, Hello, Message, client_handshake};
 use std::{net::SocketAddr, time::Duration};
 use tokio::{net::TcpStream, time::timeout};
 
-pub async fn run(server: SocketAddr, name: String) -> Result<()> {
+pub async fn run(server: SocketAddr, name: String, psk: Option<String>) -> Result<()> {
     println!("DeskBridge diagnostics");
     println!("local_version: {}", crate::build_info::version());
     println!("local_platform: {}", crate::build_info::platform());
@@ -17,8 +18,23 @@ pub async fn run(server: SocketAddr, name: String) -> Result<()> {
     println!("tcp: ok");
 
     let mut stream = stream;
-    write_frame(
+    let enc = match psk.as_deref() {
+        Some(secret) if !secret.is_empty() => {
+            let session = timeout(
+                Duration::from_secs(3),
+                client_handshake(&mut stream, secret),
+            )
+            .await
+            .context("PSK handshake timed out")?
+            .context("PSK handshake failed (check the secret matches the server)")?;
+            println!("encryption: ok (psk)");
+            Encryption::secure(session)
+        }
+        _ => Encryption::Plain,
+    };
+    send(
         &mut stream,
+        &enc,
         &Message::Hello(Hello::diagnostic(name).with_app_metadata(
             crate::build_info::version(),
             crate::build_info::platform(),
@@ -26,7 +42,7 @@ pub async fn run(server: SocketAddr, name: String) -> Result<()> {
         )),
     )
     .await?;
-    match timeout(Duration::from_secs(3), read_frame(&mut stream)).await {
+    match timeout(Duration::from_secs(3), recv(&mut stream, &enc)).await {
         Ok(Ok(Message::Welcome(welcome))) => {
             println!("protocol: ok");
             println!("server_name: {}", welcome.server_name);

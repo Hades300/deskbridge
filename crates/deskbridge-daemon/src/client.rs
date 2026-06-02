@@ -1,9 +1,10 @@
 use crate::input::{EnigoSink, InputSink, LogSink};
 use anyhow::{Context, Result, anyhow};
+use deskbridge_core::secure::{recv, send};
 use deskbridge_core::{
     CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket, DEFAULT_HEARTBEAT_MS,
-    DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, EventAck, FrameError, Hello,
-    InputEvent, InputPacket, Message, Ping, Pong, REPLACED_SESSION_REASON, read_frame, write_frame,
+    DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot, Encryption, EventAck, FrameError,
+    Hello, InputEvent, InputPacket, Message, Ping, Pong, REPLACED_SESSION_REASON, client_handshake,
 };
 use std::collections::VecDeque;
 use std::{
@@ -24,6 +25,7 @@ pub struct ClientOptions {
     pub stale_after_ms: u64,
     pub max_events: Option<u64>,
     pub clipboard: ClipboardConfig,
+    pub psk: Option<String>,
 }
 
 pub async fn run(options: ClientOptions) -> Result<()> {
@@ -77,10 +79,20 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
         .with_context(|| format!("failed to connect {}", options.server))?;
     stream.set_nodelay(true)?;
 
-    let hello = client_hello(options);
-    write_frame(&mut stream, &Message::Hello(hello)).await?;
+    let enc = match options.psk.as_deref() {
+        Some(secret) if !secret.is_empty() => {
+            info!("authenticating with shared secret (encrypted session)");
+            Encryption::secure(client_handshake(&mut stream, secret).await.map_err(|err| {
+                anyhow!("PSK handshake failed (check the secret matches the server): {err}")
+            })?)
+        }
+        _ => Encryption::Plain,
+    };
 
-    let welcome = read_frame(&mut stream).await?;
+    let hello = client_hello(options);
+    send(&mut stream, &enc, &Message::Hello(hello)).await?;
+
+    let welcome = recv(&mut stream, &enc).await?;
     let (heartbeat_ms, server_clipboard_supported) = match welcome {
         Message::Welcome(welcome) => {
             let server_clipboard_supported = welcome.capabilities.contains(&Capability::Clipboard)
@@ -112,7 +124,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
         .as_ref()
         .map(crate::clipboard::ClipboardRuntime::spawn_watcher);
     let (reader, mut writer) = stream.into_split();
-    let mut inbound = spawn_reader(reader);
+    let mut inbound = spawn_reader(reader, enc.clone());
 
     let heartbeat = Duration::from_millis(heartbeat_ms.max(DEFAULT_HEARTBEAT_MS));
     let stale_after = Duration::from_millis(
@@ -150,7 +162,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                             sent_at_ms: deskbridge_core::now_ms(),
                         });
                         debug!(seq, "sending heartbeat");
-                        write_frame(&mut writer, &ping).await?;
+                        send(&mut writer, &enc, &ping).await?;
                         continue;
                     }
                     _ = stale_check.tick() => {
@@ -166,7 +178,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
                     packet = recv_clipboard(&mut clipboard_rx), if clipboard_rx.is_some() => {
                         if let Some(packet) = packet {
                             let summary = crate::clipboard::content_summary(&packet.content);
-                            write_frame(&mut writer, &Message::Clipboard(packet)).await?;
+                            send(&mut writer, &enc, &Message::Clipboard(packet)).await?;
                             debug_state.push(format!("sent clipboard {summary}"));
                         }
                         continue;
@@ -181,6 +193,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
             match process_inbound_message(
                 message,
                 &mut writer,
+                &enc,
                 sink.as_mut(),
                 options,
                 &clipboard_runtime,
@@ -211,6 +224,7 @@ async fn connect_once(options: &ClientOptions) -> Result<ClientSessionOutcome> {
 async fn process_inbound_message<W>(
     message: Message,
     writer: &mut W,
+    enc: &Encryption,
     sink: &mut dyn InputSink,
     options: &ClientOptions,
     clipboard_runtime: &Option<crate::clipboard::ClipboardRuntime>,
@@ -224,8 +238,9 @@ where
 {
     match message {
         Message::Ping(ping) => {
-            write_frame(
+            send(
                 writer,
+                enc,
                 &Message::Pong(Pong {
                     seq: ping.seq,
                     sent_at_ms: ping.sent_at_ms,
@@ -249,6 +264,7 @@ where
             let applied_at_ms = deskbridge_core::now_ms();
             write_input_acks(
                 writer,
+                enc,
                 &batch.ack_seqs,
                 received_at_ms,
                 applied_at_ms,
@@ -284,7 +300,7 @@ where
         Message::PortalFlash(_) => {}
         Message::DebugRequest(request) => {
             let response = handle_debug_request(request, sink, debug_state).await;
-            write_frame(writer, &Message::DebugResponse(response)).await?;
+            send(writer, enc, &Message::DebugResponse(response)).await?;
         }
         Message::Status(status) => {
             warn!(kind = ?status.kind, message = status.message, "server status");
@@ -380,6 +396,7 @@ fn coalesce_mouse_move_packet(
 
 async fn write_input_acks<W>(
     writer: &mut W,
+    enc: &Encryption,
     ack_seqs: &[u64],
     received_at_ms: u128,
     applied_at_ms: u128,
@@ -393,8 +410,9 @@ where
     };
 
     for seq in earlier_seqs {
-        write_frame(
+        send(
             writer,
+            enc,
             &Message::Ack(EventAck {
                 seq: *seq,
                 received_at_ms: Some(received_at_ms),
@@ -405,8 +423,9 @@ where
         .await?;
     }
 
-    write_frame(
+    send(
         writer,
+        enc,
         &Message::Ack(EventAck {
             seq: last_seq,
             received_at_ms: Some(received_at_ms),
@@ -418,14 +437,17 @@ where
     Ok(())
 }
 
-fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
+fn spawn_reader<R>(
+    mut reader: R,
+    enc: Encryption,
+) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         loop {
-            let result = read_frame(&mut reader).await;
+            let result = recv(&mut reader, &enc).await;
             let should_stop = result.is_err();
             if tx.send(result).is_err() || should_stop {
                 break;
@@ -748,7 +770,7 @@ fn client_hello(options: &ClientOptions) -> Hello {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deskbridge_core::{InputPacket, Welcome};
+    use deskbridge_core::{InputPacket, Welcome, read_frame, write_frame};
     use tokio::io::duplex;
     use tokio::net::TcpListener;
     use uuid::Uuid;
@@ -804,6 +826,7 @@ mod tests {
                     enabled: false,
                     ..ClipboardConfig::default()
                 },
+                psk: None,
             }),
         )
         .await
@@ -864,7 +887,7 @@ mod tests {
     async fn coalesced_mouse_move_acks_every_original_sequence() {
         let (mut writer, mut reader) = duplex(4096);
 
-        write_input_acks(&mut writer, &[1, 2, 3], 10, 20, 42)
+        write_input_acks(&mut writer, &Encryption::Plain, &[1, 2, 3], 10, 20, 42)
             .await
             .unwrap();
 

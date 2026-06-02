@@ -39,6 +39,16 @@ The current protocol is length-prefixed JSON:
 
 This is intentionally inspectable during early product work. A future protocol can switch the frame payload to MessagePack or protobuf without changing the transport state machine.
 
+When a shared secret (`security.psk`) is configured on both peers, the transport
+is upgraded before any application data: the client runs a Noise `NNpsk0`
+handshake (X25519 + ChaCha20-Poly1305 + BLAKE2s) as initiator and the server as
+responder. After the handshake every frame is an AEAD record (large payloads
+such as clipboard images are split across multiple Noise messages and
+reassembled). This gives mutual authentication, confidentiality, integrity, and
+forward secrecy. A peer without the matching secret cannot complete the
+handshake, so the server fails closed. Without a secret the transport stays
+plaintext for backwards compatibility.
+
 ## Configuration
 
 The JSON config has four stable top-level areas:
