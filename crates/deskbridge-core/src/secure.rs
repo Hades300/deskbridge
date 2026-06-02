@@ -13,13 +13,18 @@
 use crate::codec::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 use crate::protocol::Message;
 use sha2::{Digest, Sha256};
-use snow::{Builder, TransportState};
+use snow::{Builder, HandshakeState, TransportState};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Noise pattern: no static keys, pre-shared key mixed in before the first
 /// message, X25519 DH, ChaCha20-Poly1305 AEAD, BLAKE2s hashing.
 const NOISE_PARAMS: &str = "Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s";
+
+/// Anonymous handshake used for interactive pairing: same primitives, no PSK.
+/// The resulting channel is confidential but unauthenticated, so pairing layers
+/// a short-authentication-string (SAS) comparison on top to detect a MITM.
+const PAIRING_PARAMS: &str = "Noise_NN_25519_ChaChaPoly_BLAKE2s";
 
 /// Noise limits a single transport message to 65535 bytes including the tag.
 const MAX_NOISE_MESSAGE: usize = 65535;
@@ -41,7 +46,7 @@ fn crypto_err<E: std::fmt::Display>(err: E) -> FrameError {
     FrameError::Crypto(err.to_string())
 }
 
-async fn write_raw<W>(writer: &mut W, bytes: &[u8]) -> Result<(), FrameError>
+pub(crate) async fn write_raw<W>(writer: &mut W, bytes: &[u8]) -> Result<(), FrameError>
 where
     W: AsyncWrite + Unpin,
 {
@@ -54,7 +59,7 @@ where
     Ok(())
 }
 
-async fn read_raw<R>(reader: &mut R) -> Result<Vec<u8>, FrameError>
+pub(crate) async fn read_raw<R>(reader: &mut R) -> Result<Vec<u8>, FrameError>
 where
     R: AsyncRead + Unpin,
 {
@@ -67,58 +72,118 @@ where
     Ok(buf)
 }
 
-/// Perform the Noise handshake as the initiator (the connecting client).
-pub async fn client_handshake<S>(stream: &mut S, secret: &str) -> Result<SecureSession, FrameError>
+/// Build a handshake state for the given pattern, optionally mixing in a PSK.
+fn build_handshake(
+    params: &str,
+    psk: Option<&str>,
+    initiator: bool,
+) -> Result<HandshakeState, FrameError> {
+    let psk_bytes = psk.map(derive_psk);
+    let mut builder = Builder::new(params.parse().map_err(crypto_err)?);
+    if let Some(bytes) = psk_bytes.as_ref() {
+        builder = builder.psk(0, bytes).map_err(crypto_err)?;
+    }
+    if initiator {
+        builder.build_initiator()
+    } else {
+        builder.build_responder()
+    }
+    .map_err(crypto_err)
+}
+
+/// Drive the two-message handshake (`-> e`, `<- e, ee`) as the initiator and
+/// return the transport plus the channel-binding handshake hash.
+async fn run_initiator<S>(
+    stream: &mut S,
+    mut handshake: HandshakeState,
+) -> Result<(SecureSession, [u8; 32]), FrameError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let psk = derive_psk(secret);
-    let mut handshake = Builder::new(NOISE_PARAMS.parse().map_err(crypto_err)?)
-        .psk(0, &psk)
-        .map_err(crypto_err)?
-        .build_initiator()
-        .map_err(crypto_err)?;
-
     let mut buf = vec![0u8; MAX_HANDSHAKE_FRAME];
-    // -> e
     let len = handshake.write_message(&[], &mut buf).map_err(crypto_err)?;
     write_raw(stream, &buf[..len]).await?;
-    // <- e, ee
+
     let response = read_raw(stream).await?;
     let mut scratch = vec![0u8; MAX_HANDSHAKE_FRAME];
     handshake
         .read_message(&response, &mut scratch)
         .map_err(crypto_err)?;
 
-    let transport = handshake.into_transport_mode().map_err(crypto_err)?;
-    Ok(SecureSession { transport })
+    finish_handshake(handshake)
 }
 
-/// Perform the Noise handshake as the responder (the listening server).
-pub async fn server_handshake<S>(stream: &mut S, secret: &str) -> Result<SecureSession, FrameError>
+/// Drive the two-message handshake as the responder.
+async fn run_responder<S>(
+    stream: &mut S,
+    mut handshake: HandshakeState,
+) -> Result<(SecureSession, [u8; 32]), FrameError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let psk = derive_psk(secret);
-    let mut handshake = Builder::new(NOISE_PARAMS.parse().map_err(crypto_err)?)
-        .psk(0, &psk)
-        .map_err(crypto_err)?
-        .build_responder()
-        .map_err(crypto_err)?;
-
-    // -> e
     let first = read_raw(stream).await?;
     let mut scratch = vec![0u8; MAX_HANDSHAKE_FRAME];
     handshake
         .read_message(&first, &mut scratch)
         .map_err(crypto_err)?;
-    // <- e, ee
+
     let mut buf = vec![0u8; MAX_HANDSHAKE_FRAME];
     let len = handshake.write_message(&[], &mut buf).map_err(crypto_err)?;
     write_raw(stream, &buf[..len]).await?;
 
+    finish_handshake(handshake)
+}
+
+fn finish_handshake(handshake: HandshakeState) -> Result<(SecureSession, [u8; 32]), FrameError> {
+    let mut hash = [0u8; 32];
+    let raw = handshake.get_handshake_hash();
+    if raw.len() < 32 {
+        return Err(FrameError::Crypto("short handshake hash".to_string()));
+    }
+    hash.copy_from_slice(&raw[..32]);
     let transport = handshake.into_transport_mode().map_err(crypto_err)?;
-    Ok(SecureSession { transport })
+    Ok((SecureSession { transport }, hash))
+}
+
+/// Perform the PSK-authenticated Noise handshake as the initiator (client).
+pub async fn client_handshake<S>(stream: &mut S, secret: &str) -> Result<SecureSession, FrameError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let handshake = build_handshake(NOISE_PARAMS, Some(secret), true)?;
+    Ok(run_initiator(stream, handshake).await?.0)
+}
+
+/// Perform the PSK-authenticated Noise handshake as the responder (server).
+pub async fn server_handshake<S>(stream: &mut S, secret: &str) -> Result<SecureSession, FrameError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let handshake = build_handshake(NOISE_PARAMS, Some(secret), false)?;
+    Ok(run_responder(stream, handshake).await?.0)
+}
+
+/// Anonymous pairing handshake as the initiator (joining device). Returns the
+/// confidential transport and the SAS channel-binding hash.
+pub async fn pairing_handshake_initiator<S>(
+    stream: &mut S,
+) -> Result<(SecureSession, [u8; 32]), FrameError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let handshake = build_handshake(PAIRING_PARAMS, None, true)?;
+    run_initiator(stream, handshake).await
+}
+
+/// Anonymous pairing handshake as the responder (hosting device).
+pub async fn pairing_handshake_responder<S>(
+    stream: &mut S,
+) -> Result<(SecureSession, [u8; 32]), FrameError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let handshake = build_handshake(PAIRING_PARAMS, None, false)?;
+    run_responder(stream, handshake).await
 }
 
 /// An established Noise transport. `send`/`recv` serialize a [`Message`], split
@@ -154,6 +219,32 @@ impl SecureSession {
             body.extend_from_slice(&cipher[..len]);
         }
         Ok(body)
+    }
+
+    /// Encrypt a single small payload (≤ one Noise record) into one AEAD
+    /// record. Used by pairing to transfer the freshly minted secret.
+    pub fn encrypt_raw(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, FrameError> {
+        if plaintext.len() > MAX_CHUNK_PLAINTEXT {
+            return Err(FrameError::InvalidLength(plaintext.len()));
+        }
+        let mut cipher = vec![0u8; plaintext.len() + TAG_LEN];
+        let len = self
+            .transport
+            .write_message(plaintext, &mut cipher)
+            .map_err(crypto_err)?;
+        cipher.truncate(len);
+        Ok(cipher)
+    }
+
+    /// Decrypt a single AEAD record produced by [`Self::encrypt_raw`].
+    pub fn decrypt_raw(&mut self, record: &[u8]) -> Result<Vec<u8>, FrameError> {
+        let mut out = vec![0u8; record.len()];
+        let len = self
+            .transport
+            .read_message(record, &mut out)
+            .map_err(crypto_err)?;
+        out.truncate(len);
+        Ok(out)
     }
 
     /// Decrypt a wire body produced by [`Self::encrypt_message`].

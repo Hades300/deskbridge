@@ -156,6 +156,27 @@ deskbridge client --server 192.168.2.5:24800 --name mac --psk "your-shared-secre
 The secret can also come from the `DESKBRIDGE_PSK` environment variable or the
 `security.psk` field in the JSON config. `diag` and `debug` accept `--psk` too.
 
+### Pairing (no secret to type)
+
+Instead of typing the same secret on both machines, pair them by confirming a
+short code. One device hosts, the other joins; both show the **same six-digit
+code**, you confirm it matches, and a strong secret is generated and written to
+each device's config. A man-in-the-middle relaying the handshake would make the
+two codes differ, so comparing them authenticates the link (the same idea as
+Bluetooth numeric comparison).
+
+```bash
+# On the host:
+deskbridge pair --listen 0.0.0.0:24800 --config deskbridge.json
+
+# On the other device:
+deskbridge pair --join 192.168.2.5:24800 --config deskbridge.json
+```
+
+Each side prints `Pairing code: NNN NNN`; confirm they match on both screens.
+After that, run `server`/`client` as usual with those configs — the session is
+encrypted with the paired secret.
+
 Run a client:
 
 ```bash

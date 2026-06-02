@@ -11,7 +11,7 @@ mod permissions;
 mod server;
 
 use crate::input::InputSink;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use deskbridge_core::{
     ClipboardConfig, DEFAULT_HEARTBEAT_MS, DEFAULT_REMOTE_SCROLL_SCALE, DebugCommand,
@@ -168,6 +168,23 @@ enum Command {
         /// How long to listen for advertisements, in milliseconds.
         #[arg(long, default_value_t = 2000)]
         timeout_ms: u64,
+    },
+    /// Pair two devices: agree on an encrypted-session secret by confirming a
+    /// short code shown on both screens.
+    Pair {
+        /// Config file to write the agreed secret into (security.psk).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Join a host at this address. Omit to host a pairing session.
+        #[arg(long)]
+        join: Option<SocketAddr>,
+        /// Address to listen on when hosting.
+        #[arg(long, default_value = "0.0.0.0:24800")]
+        listen: SocketAddr,
+        /// Auto-confirm the code (still printed). Only use it once you have
+        /// visually compared the code on both devices.
+        #[arg(long, default_value_t = false)]
+        yes: bool,
     },
 }
 
@@ -497,6 +514,12 @@ async fn main() -> Result<()> {
             println!("wrote {}", path.display());
             Ok(())
         }
+        Command::Pair {
+            config,
+            join,
+            listen,
+            yes,
+        } => run_pair(config, join, listen, yes).await,
         Command::Discover { timeout_ms } => {
             let servers = discovery::discover(Duration::from_millis(timeout_ms))?;
             if servers.is_empty() {
@@ -568,6 +591,75 @@ fn debug_cli_command(command: DebugCliCommand, config: Option<&DeskBridgeConfig>
             dy,
         },
     }
+}
+
+async fn run_pair(
+    config: Option<PathBuf>,
+    join: Option<SocketAddr>,
+    listen: SocketAddr,
+    yes: bool,
+) -> Result<()> {
+    let confirm = move |sas: &str| -> bool {
+        println!();
+        println!("    Pairing code:  {sas}");
+        println!();
+        if yes {
+            println!("Auto-confirmed (--yes); make sure it matches the other device.");
+            return true;
+        }
+        print!("Does the other device show the same code? [y/N] ");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_err() {
+            return false;
+        }
+        matches!(line.trim(), "y" | "Y" | "yes" | "YES" | "Yes")
+    };
+
+    let result = match join {
+        Some(addr) => {
+            println!("Connecting to {addr} to pair...");
+            let mut stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .with_context(|| format!("failed to connect {addr}"))?;
+            stream.set_nodelay(true)?;
+            deskbridge_core::pair_join(&mut stream, confirm).await?
+        }
+        None => {
+            println!("Waiting for a device to pair on {listen}...");
+            let listener = tokio::net::TcpListener::bind(listen)
+                .await
+                .with_context(|| format!("failed to bind {listen}"))?;
+            let (mut stream, peer) = listener.accept().await?;
+            println!("Device connected from {peer}.");
+            stream.set_nodelay(true)?;
+            deskbridge_core::pair_host(&mut stream, confirm).await?
+        }
+    };
+
+    match config {
+        Some(path) => {
+            let mut cfg = if path.exists() {
+                DeskBridgeConfig::load(&path)
+                    .with_context(|| format!("failed to load {}", path.display()))?
+            } else {
+                DeskBridgeConfig::default()
+            };
+            cfg.security.psk = Some(result.secret);
+            cfg.save(&path)
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            println!(
+                "Paired. Encrypted-session secret written to {}.",
+                path.display()
+            );
+        }
+        None => {
+            println!("Paired. Set this as security.psk on BOTH devices:");
+            println!("    {}", result.secret);
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the shared secret: an explicit flag/env wins, otherwise fall back to
