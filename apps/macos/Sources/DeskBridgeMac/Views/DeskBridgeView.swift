@@ -6,6 +6,7 @@ struct DeskBridgeView: View {
     @State private var dragStartOffset: CGSize?
     @State private var dragStartScale: Double = 0.08
     @State private var diagnosticsExpanded = false
+    @State private var showPairing = false
 
     var body: some View {
         ZStack {
@@ -29,6 +30,9 @@ struct DeskBridgeView: View {
             }
         }
         .frame(minWidth: 860, idealWidth: 920, minHeight: 760)
+        .sheet(isPresented: $showPairing) {
+            PairingView(model: model, isPresented: $showPairing)
+        }
     }
 
     private var header: some View {
@@ -116,6 +120,15 @@ struct DeskBridgeView: View {
                 model.disconnect()
             } label: {
                 Label(model.mode == .server ? "Stop" : "Disconnect", systemImage: "stop.fill")
+            }
+
+            if model.mode == .client {
+                Button {
+                    model.pairingPhase = .idle
+                    showPairing = true
+                } label: {
+                    Label("Pair", systemImage: "qrcode")
+                }
             }
 
             Spacer(minLength: 14)
@@ -538,7 +551,7 @@ struct DeskBridgeView: View {
     }
 }
 
-private enum DeskBridgeTheme {
+enum DeskBridgeTheme {
     static let accent = Color(red: 0.80, green: 0.95, blue: 0.42)
     static let success = Color(red: 0.43, green: 0.84, blue: 0.47)
     static let warning = Color(red: 0.95, green: 0.65, blue: 0.35)
