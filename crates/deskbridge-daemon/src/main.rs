@@ -5,6 +5,7 @@ mod clipboard;
 mod debugctl;
 mod diag;
 mod discovery;
+mod dragdrop;
 mod input;
 mod perf;
 mod permissions;

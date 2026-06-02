@@ -264,6 +264,17 @@ pub struct ClipboardFile {
     pub data_base64: String,
 }
 
+/// Files dragged from one machine and dropped onto another, delivered at the
+/// drop location in the target's coordinate space.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileDropPacket {
+    pub seq: u64,
+    pub sent_at_ms: u128,
+    pub files: Vec<ClipboardFile>,
+    pub x: i32,
+    pub y: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DebugCommand {
@@ -371,6 +382,7 @@ pub enum Message {
     Input(InputPacket),
     Ack(EventAck),
     Clipboard(ClipboardPacket),
+    FileDrop(FileDropPacket),
     PortalFlash(PortalFlashPacket),
     DebugRequest(DebugRequest),
     DebugResponse(DebugResponse),
@@ -598,6 +610,24 @@ mod tests {
                     data_base64: "aGVsbG8=".to_string(),
                 }],
             },
+        });
+        let encoded = serde_json::to_string(&packet).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(packet, decoded);
+    }
+
+    #[test]
+    fn file_drop_round_trips() {
+        let packet = Message::FileDrop(FileDropPacket {
+            seq: 3,
+            sent_at_ms: 99,
+            files: vec![ClipboardFile {
+                name: "report.pdf".to_string(),
+                size: 5,
+                data_base64: "aGVsbG8=".to_string(),
+            }],
+            x: 420,
+            y: 240,
         });
         let encoded = serde_json::to_string(&packet).unwrap();
         let decoded: Message = serde_json::from_str(&encoded).unwrap();

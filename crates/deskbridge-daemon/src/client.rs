@@ -297,6 +297,16 @@ where
                 }
             }
         }
+        Message::FileDrop(packet) => {
+            let count = packet.files.len();
+            match crate::dragdrop::apply_file_drop(packet).await {
+                Ok(outcome) => debug_state.push(outcome.summary()),
+                Err(err) => {
+                    debug_state.push(format!("file drop failed: {err:#}"));
+                    warn!(error = %err, count, "file drop failed");
+                }
+            }
+        }
         Message::PortalFlash(_) => {}
         Message::DebugRequest(request) => {
             let response = handle_debug_request(request, sink, debug_state).await;
