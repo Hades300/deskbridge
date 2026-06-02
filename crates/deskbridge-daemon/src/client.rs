@@ -307,7 +307,20 @@ where
                 }
             }
         }
-        Message::PortalFlash(_) => {}
+        Message::PortalFlash(flash) => {
+            // TODO(platform): render an entry/exit flash overlay at (x, y).
+            debug_state.push(format!(
+                "portal flash {:?} edge={:?} at ({}, {})",
+                flash.role, flash.edge, flash.x, flash.y
+            ));
+            debug!(
+                role = ?flash.role,
+                edge = ?flash.edge,
+                x = flash.x,
+                y = flash.y,
+                "portal flash received"
+            );
+        }
         Message::DebugRequest(request) => {
             let response = handle_debug_request(request, sink, debug_state).await;
             send(writer, enc, &Message::DebugResponse(response)).await?;
