@@ -304,7 +304,9 @@ fn files_to_content(paths: Vec<PathBuf>, max_bytes: u64) -> Result<ClipboardCont
 /// file paste, so the staging directory does not grow without bound.
 const STAGING_TTL_MS: u128 = 60 * 60 * 1000;
 
-fn stage_remote_files(files: Vec<ClipboardFile>) -> Result<Vec<PathBuf>> {
+/// Materialize transferred files to a fresh staging directory and return their
+/// paths. Shared by clipboard file paste and drag-and-drop.
+pub(crate) fn stage_remote_files(files: Vec<ClipboardFile>) -> Result<Vec<PathBuf>> {
     let root = clipboard_staging_dir();
     prune_staging_dir(&root, deskbridge_core::now_ms());
     let directory = root.join(format!("{}", deskbridge_core::now_ms()));

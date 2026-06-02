@@ -270,6 +270,10 @@ Stable enough to use and iterate on:
 
 Still intentionally limited:
 
+- Cross-screen drag-and-drop: the transfer/staging engine and protocol are in
+  place (dropped files are received and materialized to disk); capturing the
+  originating drag gesture and injecting the native OS drop are platform
+  follow-ups.
 - Directory clipboard transfer and large-file streaming.
 - Polished signed installers and notarization.
 - Broad validation across every Windows/macOS/Linux display topology.
