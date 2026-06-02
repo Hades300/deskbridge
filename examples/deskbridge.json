@@ -50,5 +50,8 @@
     "files": true,
     "poll_ms": 750,
     "max_transfer_bytes": 33554432
+  },
+  "security": {
+    "psk": ""
   }
 }

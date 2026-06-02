@@ -1,10 +1,12 @@
 use crate::capture::CaptureEvent;
 use anyhow::{Context, Result};
+use deskbridge_core::secure::{recv, send};
 use deskbridge_core::{
     Button, CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket,
-    DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest, DebugResponse, Edge, FrameError, Hello,
-    InputEvent, InputPacket, InputRouter, KeyState, Layout, Message, REPLACED_SESSION_REASON, Size,
-    Status, StatusKind, Welcome, normalize_remote_scroll_scale, read_frame, write_frame,
+    DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest, DebugResponse, Edge, Encryption, FrameError,
+    Hello, InputEvent, InputPacket, InputRouter, KeyState, Layout, Message,
+    REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome, normalize_remote_scroll_scale,
+    server_handshake,
 };
 use std::{
     collections::HashMap,
@@ -43,6 +45,7 @@ pub struct ServerOptions {
     pub clipboard: ClipboardConfig,
     pub edge_switch_delay_ms: u64,
     pub edge_corner_size: u32,
+    pub psk: Option<String>,
 }
 
 type SessionRegistry = Arc<Mutex<HashMap<String, SessionHandle>>>;
@@ -421,6 +424,7 @@ impl ServerPerfMetrics {
 
 struct ClientSessionRuntime<'a> {
     options: &'a ServerOptions,
+    enc: &'a Encryption,
     runtime_settings: ServerRuntimeSettings,
     client_name: &'a str,
     session_id: Uuid,
@@ -661,11 +665,31 @@ async fn handle_client(
         server_log,
     } = shared;
     stream.set_nodelay(true)?;
-    let hello = match read_frame(&mut stream).await {
+
+    // If a shared secret is configured, require the encrypted Noise handshake
+    // before any application data. A peer without the matching secret cannot
+    // complete it, so unauthenticated connections are rejected here.
+    let enc = match options.psk.as_deref() {
+        Some(secret) if !secret.is_empty() => match server_handshake(&mut stream, secret).await {
+            Ok(session) => Encryption::secure(session),
+            Err(err) => {
+                push_server_log(
+                    &server_log,
+                    format!("rejected peer={peer} psk handshake failed: {err:#}"),
+                );
+                warn!(peer = %peer, error = %err, "PSK handshake failed; rejecting client");
+                return Ok(());
+            }
+        },
+        _ => Encryption::Plain,
+    };
+
+    let hello = match recv(&mut stream, &enc).await {
         Ok(Message::Hello(hello)) => hello,
         Ok(other) => {
-            write_frame(
+            send(
                 &mut stream,
+                &enc,
                 &Message::Status(Status {
                     kind: StatusKind::Error,
                     message: format!("expected hello, got {other:?}"),
@@ -691,7 +715,7 @@ async fn handle_client(
         Err(err) => return Err(err.into()),
     };
 
-    if let Err(err) = validate_client(&hello, &allow, &mut stream).await {
+    if let Err(err) = validate_client(&hello, &allow, &mut stream, &enc).await {
         push_server_log(
             &server_log,
             format!(
@@ -738,9 +762,10 @@ async fn handle_client(
             capabilities = ?hello.capabilities,
             "diagnostic client accepted"
         );
-        write_frame(&mut stream, &welcome).await?;
+        send(&mut stream, &enc, &welcome).await?;
         return handle_diagnostic_session(
             &mut stream,
+            &enc,
             &hello.screen_name,
             &options,
             sessions,
@@ -802,7 +827,7 @@ async fn handle_client(
         ),
     );
 
-    write_frame(&mut stream, &welcome).await?;
+    send(&mut stream, &enc, &welcome).await?;
     let client_clipboard_supported = hello.capabilities.contains(&Capability::Clipboard)
         && hello.clipboard_protocol == Some(CLIPBOARD_PROTOCOL_VERSION);
 
@@ -810,6 +835,7 @@ async fn handle_client(
         stream,
         ClientSessionRuntime {
             options: &options,
+            enc: &enc,
             runtime_settings,
             client_name: &hello.screen_name,
             session_id,
@@ -847,6 +873,7 @@ async fn handle_client(
 async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>) -> Result<()> {
     let ClientSessionRuntime {
         options,
+        enc,
         runtime_settings,
         client_name,
         session_id,
@@ -860,7 +887,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     } = runtime;
     let mut ticker = time::interval(Duration::from_secs(5));
     let (reader, mut writer) = stream.into_split();
-    let mut inbound = spawn_reader(reader);
+    let mut inbound = spawn_reader(reader, enc.clone());
     let mut seq = 0_u64;
     let mut demo_stage = 0_u64;
     let mut route_layout = session_route_layout(
@@ -909,6 +936,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                 demo_stage += 1;
                 write_tracked_input_packet(
                     &mut writer,
+                    enc,
                     &mut seq,
                     event,
                     &mut perf,
@@ -991,6 +1019,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         );
                         write_tracked_input_packet(
                             &mut writer,
+                            enc,
                             &mut seq,
                             event,
                             &mut perf,
@@ -1008,6 +1037,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         if routed.released_to_local {
                             let release_count = write_remote_release_events(
                                 &mut writer,
+                                enc,
                                 &mut seq,
                                 &mut perf,
                                 &mut remote_input_state,
@@ -1034,7 +1064,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                 }
             }
             _ = shutdown_rx.recv() => {
-                let _ = write_frame(&mut writer, &Message::Goodbye {
+                let _ = send(&mut writer, enc, &Message::Goodbye {
                     reason: REPLACED_SESSION_REASON.to_string(),
                 }).await;
                 return Ok(());
@@ -1042,7 +1072,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
             packet = recv_clipboard(&mut clipboard_rx), if clipboard_rx.is_some() => {
                 if let Some(packet) = packet {
                     let summary = crate::clipboard::content_summary(&packet.content);
-                    write_frame(&mut writer, &Message::Clipboard(packet)).await?;
+                    send(&mut writer, enc, &Message::Clipboard(packet)).await?;
                     push_server_log(
                         &server_log,
                         format!("clipboard sent session={session_id} target={client_name} {summary}"),
@@ -1051,7 +1081,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
             }
             Some(debug) = debug_rx.recv() => {
                 let request_id = debug.request.request_id;
-                if let Err(err) = write_frame(&mut writer, &Message::DebugRequest(debug.request)).await {
+                if let Err(err) = send(&mut writer, enc, &Message::DebugRequest(debug.request)).await {
                     let _ = debug.response_tx.send(debug_error_response(
                         request_id,
                         format!("failed to send debug request to client: {err}"),
@@ -1116,6 +1146,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             );
                             write_tracked_input_packet(
                                 &mut writer,
+                                enc,
                                 &mut seq,
                                 event,
                                 &mut perf,
@@ -1196,6 +1227,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                         if reset_route || demo_router.is_none() {
                             let release_count = write_remote_release_events(
                                 &mut writer,
+                                enc,
                                 &mut seq,
                                 &mut perf,
                                 &mut remote_input_state,
@@ -1238,7 +1270,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                     .ok_or_else(|| anyhow::anyhow!("client reader stopped"))??;
                 match message {
                     Message::Ping(ping) => {
-                        write_frame(&mut writer, &Message::Pong(deskbridge_core::Pong {
+                        send(&mut writer, enc, &Message::Pong(deskbridge_core::Pong {
                             seq: ping.seq,
                             sent_at_ms: ping.sent_at_ms,
                         })).await?;
@@ -1346,13 +1378,14 @@ async fn recv_clipboard(
 
 async fn handle_diagnostic_session(
     stream: &mut TcpStream,
+    enc: &Encryption,
     target_screen: &str,
     options: &ServerOptions,
     sessions: SessionRegistry,
     runtime_settings: ServerRuntimeSettings,
     server_log: ServerDebugLog,
 ) -> Result<()> {
-    match time::timeout(Duration::from_secs(5), read_frame(stream)).await {
+    match time::timeout(Duration::from_secs(5), recv(stream, enc)).await {
         Ok(Ok(Message::DebugRequest(request))) => match request.command.clone() {
             DebugCommand::ServerLogs => {
                 let response = build_server_logs_response(
@@ -1364,7 +1397,7 @@ async fn handle_diagnostic_session(
                     &server_log,
                 )
                 .await;
-                write_frame(stream, &Message::DebugResponse(response)).await?;
+                send(stream, enc, &Message::DebugResponse(response)).await?;
                 Ok(())
             }
             DebugCommand::RouteProbe {
@@ -1375,6 +1408,7 @@ async fn handle_diagnostic_session(
             } => {
                 forward_route_debug_request(
                     stream,
+                    enc,
                     target_screen,
                     sessions,
                     request.request_id,
@@ -1395,6 +1429,7 @@ async fn handle_diagnostic_session(
             } => {
                 forward_route_debug_request(
                     stream,
+                    enc,
                     target_screen,
                     sessions,
                     request.request_id,
@@ -1410,6 +1445,7 @@ async fn handle_diagnostic_session(
             DebugCommand::RouteStatus => {
                 forward_route_debug_request(
                     stream,
+                    enc,
                     target_screen,
                     sessions,
                     request.request_id,
@@ -1420,6 +1456,7 @@ async fn handle_diagnostic_session(
             DebugCommand::Perf => {
                 forward_route_debug_request(
                     stream,
+                    enc,
                     target_screen,
                     sessions,
                     request.request_id,
@@ -1467,14 +1504,15 @@ async fn handle_diagnostic_session(
                     }
                 }
 
-                write_frame(stream, &Message::DebugResponse(response)).await?;
+                send(stream, enc, &Message::DebugResponse(response)).await?;
                 Ok(())
             }
-            _ => forward_debug_request(stream, target_screen, sessions, request).await,
+            _ => forward_debug_request(stream, enc, target_screen, sessions, request).await,
         },
         Ok(Ok(other)) => {
-            write_frame(
+            send(
                 stream,
+                enc,
                 &Message::Status(Status {
                     kind: StatusKind::Error,
                     message: format!("expected debug request, got {other:?}"),
@@ -1491,6 +1529,7 @@ async fn handle_diagnostic_session(
 
 async fn write_input_packet<W>(
     writer: &mut W,
+    enc: &Encryption,
     seq: u64,
     event: InputEvent,
     perf: &mut ServerPerfMetrics,
@@ -1502,7 +1541,7 @@ where
     let packet = InputPacket { seq, event };
     let started = Instant::now();
     let message = Message::Input(packet);
-    write_frame(writer, &message).await?;
+    send(writer, enc, &message).await?;
     let sent_at_ms = deskbridge_core::now_ms();
     perf.record_sent(seq, kind, sent_at_ms, started.elapsed().as_micros());
     Ok(())
@@ -1510,6 +1549,7 @@ where
 
 async fn write_tracked_input_packet<W>(
     writer: &mut W,
+    enc: &Encryption,
     seq: &mut u64,
     event: InputEvent,
     perf: &mut ServerPerfMetrics,
@@ -1520,11 +1560,12 @@ where
 {
     remote_input_state.observe(&event);
     *seq += 1;
-    write_input_packet(writer, *seq, event, perf).await
+    write_input_packet(writer, enc, *seq, event, perf).await
 }
 
 async fn write_remote_release_events<W>(
     writer: &mut W,
+    enc: &Encryption,
     seq: &mut u64,
     perf: &mut ServerPerfMetrics,
     remote_input_state: &mut RemoteInputState,
@@ -1539,7 +1580,7 @@ where
 
     let release_count = release_events.len();
     for event in release_events {
-        write_tracked_input_packet(writer, seq, event, perf, remote_input_state).await?;
+        write_tracked_input_packet(writer, enc, seq, event, perf, remote_input_state).await?;
     }
     Ok(release_count)
 }
@@ -1562,14 +1603,17 @@ fn log_remote_release(
     );
 }
 
-fn spawn_reader<R>(mut reader: R) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
+fn spawn_reader<R>(
+    mut reader: R,
+    enc: Encryption,
+) -> mpsc::UnboundedReceiver<Result<Message, FrameError>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         loop {
-            let result = read_frame(&mut reader).await;
+            let result = recv(&mut reader, &enc).await;
             let should_stop = result.is_err();
             if tx.send(result).is_err() || should_stop {
                 break;
@@ -1758,6 +1802,7 @@ fn update_runtime_input_settings(
 
 async fn forward_route_debug_request(
     stream: &mut TcpStream,
+    enc: &Encryption,
     target_screen: &str,
     sessions: SessionRegistry,
     request_id: Uuid,
@@ -1766,8 +1811,9 @@ async fn forward_route_debug_request(
     let Some(response) =
         request_route_debug_response(target_screen, &sessions, request_id, command).await
     else {
-        write_frame(
+        send(
             stream,
+            enc,
             &Message::Status(Status {
                 kind: StatusKind::Error,
                 message: format!("target client '{target_screen}' is not connected"),
@@ -1777,7 +1823,7 @@ async fn forward_route_debug_request(
         return Ok(());
     };
 
-    write_frame(stream, &Message::DebugResponse(response)).await?;
+    send(stream, enc, &Message::DebugResponse(response)).await?;
     Ok(())
 }
 
@@ -2120,6 +2166,7 @@ fn platform_screen_debug_lines() -> Vec<String> {
 
 async fn forward_debug_request(
     stream: &mut TcpStream,
+    enc: &Encryption,
     target_screen: &str,
     sessions: SessionRegistry,
     request: DebugRequest,
@@ -2133,8 +2180,9 @@ async fn forward_debug_request(
     };
 
     let Some(debug_tx) = debug_tx else {
-        write_frame(
+        send(
             stream,
+            enc,
             &Message::Status(Status {
                 kind: StatusKind::Error,
                 message: format!("target client '{target_screen}' is not connected"),
@@ -2153,8 +2201,9 @@ async fn forward_debug_request(
         })
         .is_err()
     {
-        write_frame(
+        send(
             stream,
+            enc,
             &Message::Status(Status {
                 kind: StatusKind::Error,
                 message: format!("target client '{target_screen}' is no longer available"),
@@ -2165,10 +2214,11 @@ async fn forward_debug_request(
     }
 
     match time::timeout(Duration::from_secs(5), response_rx).await {
-        Ok(Ok(response)) => write_frame(stream, &Message::DebugResponse(response)).await?,
+        Ok(Ok(response)) => send(stream, enc, &Message::DebugResponse(response)).await?,
         Ok(Err(_)) => {
-            write_frame(
+            send(
                 stream,
+                enc,
                 &Message::DebugResponse(debug_error_response(
                     request_id,
                     "debug response channel closed".to_string(),
@@ -2177,8 +2227,9 @@ async fn forward_debug_request(
             .await?;
         }
         Err(_) => {
-            write_frame(
+            send(
                 stream,
+                enc,
                 &Message::DebugResponse(debug_error_response(
                     request_id,
                     "debug request timed out".to_string(),
@@ -2233,10 +2284,12 @@ async fn validate_client(
     hello: &Hello,
     allow: &HashSet<String>,
     stream: &mut TcpStream,
+    enc: &Encryption,
 ) -> Result<()> {
     if hello.protocol_version != deskbridge_core::PROTOCOL_VERSION {
-        write_frame(
+        send(
             stream,
+            enc,
             &Message::Status(Status {
                 kind: StatusKind::Error,
                 message: format!("unsupported protocol {}", hello.protocol_version),
@@ -2247,8 +2300,9 @@ async fn validate_client(
     }
 
     if !allow.is_empty() && !allow.contains(&hello.screen_name.to_ascii_lowercase()) {
-        write_frame(
+        send(
             stream,
+            enc,
             &Message::Status(Status {
                 kind: StatusKind::Error,
                 message: format!("screen '{}' is not allowed", hello.screen_name),
@@ -2597,7 +2651,7 @@ mod tests {
     use super::*;
     use deskbridge_core::{
         DEFAULT_REMOTE_SCROLL_SCALE, DebugCommand, DebugRequest, DebugResponse, DisplaySnapshot,
-        EventAck, Link, Ping, Screen, Size,
+        EventAck, Link, Ping, Screen, Size, read_frame, write_frame,
     };
 
     fn test_layout() -> Layout {
@@ -2646,6 +2700,7 @@ mod tests {
             },
             edge_switch_delay_ms: 0,
             edge_corner_size: 0,
+            psk: None,
         }
     }
 

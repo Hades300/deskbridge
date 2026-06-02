@@ -55,6 +55,7 @@ DeskBridge is not wire-compatible with Input Leap, Barrier, or Synergy. Run Desk
 
 - Native-feel macOS status app and Windows WPF admin panel.
 - Rust daemon and protocol core with explicit heartbeats, stale-connection detection, and reconnect loops.
+- Optional shared-secret encryption: an authenticated, encrypted Noise channel so keystrokes and clipboard never travel in plaintext.
 - Zero-config LAN discovery: servers advertise over mDNS so clients can find them without typing an IP.
 - Configurable screen layout, including edge-based routing between machines with different display sizes.
 - Edge anti-misfire guards: optional dwell delay and corner dead zone to stop accidental screen switches.
@@ -137,6 +138,23 @@ Find servers on the local network without knowing their address:
 deskbridge discover
 deskbridge discover --timeout-ms 3000
 ```
+
+## Encryption
+
+By default the LAN transport is plaintext. Because keystrokes can include
+passwords and the clipboard can carry anything, set a shared secret on **both**
+machines to upgrade the connection to an authenticated, encrypted channel
+(Noise `NNpsk0`: mutual authentication, ChaCha20-Poly1305, and forward secrecy).
+A peer without the matching secret cannot connect.
+
+```bash
+# Same secret on server and client. Mismatched or missing secrets are rejected.
+deskbridge server --listen 0.0.0.0:24800 --name windows --allow mac --capture --psk "your-shared-secret"
+deskbridge client --server 192.168.2.5:24800 --name mac --psk "your-shared-secret"
+```
+
+The secret can also come from the `DESKBRIDGE_PSK` environment variable or the
+`security.psk` field in the JSON config. `diag` and `debug` accept `--psk` too.
 
 Run a client:
 

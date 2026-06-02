@@ -9,6 +9,13 @@ rust-version.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.11.0"
+# Pure-Rust Noise resolver only. Avoid the `std` feature, which pulls in `ring`
+# (C/asm) and complicates the Windows ARM64 cross-build.
+snow = { version = "0.10.0", default-features = false, features = [
+    "default-resolver",
+    "default-resolver-crypto",
+] }
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true

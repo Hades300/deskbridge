@@ -17,6 +17,8 @@ pub enum FrameError {
     ForeignProtocol { magic: String },
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("crypto error: {0}")]
+    Crypto(String),
 }
 
 pub async fn read_frame<R>(reader: &mut R) -> Result<Message, FrameError>

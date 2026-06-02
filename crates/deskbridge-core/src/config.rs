@@ -17,6 +17,16 @@ pub struct DeskBridgeConfig {
     pub input: InputConfig,
     #[serde(default)]
     pub clipboard: ClipboardConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecurityConfig {
+    /// Shared secret. When set on both peers, the connection is upgraded to an
+    /// authenticated, encrypted Noise channel. Empty or absent means plaintext.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psk: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -171,6 +181,7 @@ impl Default for DeskBridgeConfig {
             },
             input: InputConfig::default(),
             clipboard: ClipboardConfig::default(),
+            security: SecurityConfig::default(),
         }
     }
 }
