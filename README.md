@@ -215,6 +215,28 @@ DeskBridge keeps the platform-specific pieces thin:
 
 Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Multiple monitors per machine
+
+A machine with more than one display can list its monitors in the layout so the
+cursor is mapped onto a real display and never lands in the gap between two
+non-adjacent screens. Monitors are given in the machine's own desktop
+coordinates (relative to the desktop's top-left); `size` is the full
+virtual-desktop bounding box.
+
+```jsonc
+{
+  "name": "mac",
+  "size": { "width": 1728, "height": 2000 },
+  "monitors": [
+    { "origin": { "x": 0, "y": 0 },    "size": { "width": 1728, "height": 1000 } },
+    { "origin": { "x": 0, "y": 1200 }, "size": { "width": 1728, "height": 800 } }
+  ]
+}
+```
+
+When `monitors` is omitted the machine is treated as a single display, exactly
+as before.
+
 ## Current Scope
 
 Stable enough to use and iterate on:

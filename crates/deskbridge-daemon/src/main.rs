@@ -745,6 +745,7 @@ fn default_layout(server_name: &str, clients: &[String]) -> Layout {
             height: 1080,
         },
         origin: None,
+        monitors: Vec::new(),
     }];
 
     for client in clients {
@@ -755,6 +756,7 @@ fn default_layout(server_name: &str, clients: &[String]) -> Layout {
                 height: 1117,
             },
             origin: None,
+            monitors: Vec::new(),
         });
     }
 

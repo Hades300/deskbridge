@@ -455,6 +455,7 @@ mod tests {
                         height: 1080,
                     },
                     origin: None,
+                    monitors: Vec::new(),
                 },
                 Screen {
                     name: "mac".to_string(),
@@ -463,6 +464,7 @@ mod tests {
                         height: 1117,
                     },
                     origin: None,
+                    monitors: Vec::new(),
                 },
             ],
             links: vec![Link {

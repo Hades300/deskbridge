@@ -51,12 +51,88 @@ pub struct Point {
     pub y: i32,
 }
 
+/// A physical display within a machine, expressed in that machine's local
+/// desktop coordinates (relative to the screen's top-left). When a screen lists
+/// monitors, routing snaps incoming cursor positions onto the nearest monitor so
+/// the pointer never lands in a gap between non-adjacent displays.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Monitor {
+    pub origin: Point,
+    pub size: Size,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Screen {
     pub name: String,
     pub size: Size,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Point>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitors: Vec<Monitor>,
+}
+
+/// A rectangle in a screen's local coordinate space.
+#[derive(Debug, Clone, Copy)]
+struct LocalRect {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+impl LocalRect {
+    fn contains(&self, px: u32, py: u32) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
+}
+
+impl Screen {
+    /// Local rectangles for each monitor, falling back to the whole desktop
+    /// bounding box when no monitors are configured (the legacy single-display
+    /// case).
+    fn monitor_rects(&self) -> Vec<LocalRect> {
+        if self.monitors.is_empty() {
+            return vec![LocalRect {
+                x: 0,
+                y: 0,
+                w: self.size.width,
+                h: self.size.height,
+            }];
+        }
+        self.monitors
+            .iter()
+            .map(|monitor| LocalRect {
+                x: monitor.origin.x.max(0) as u32,
+                y: monitor.origin.y.max(0) as u32,
+                w: monitor.size.width,
+                h: monitor.size.height,
+            })
+            .collect()
+    }
+
+    /// Snap a point (in this screen's local coordinates) onto the nearest
+    /// monitor. Points already on a monitor are returned unchanged.
+    pub fn clamp_point_to_monitor(&self, x: u32, y: u32) -> (u32, u32) {
+        let rects = self.monitor_rects();
+        if rects.iter().any(|rect| rect.contains(x, y)) {
+            return (x, y);
+        }
+
+        let mut best: Option<((u32, u32), u64)> = None;
+        for rect in &rects {
+            let max_x = rect.x + rect.w.saturating_sub(1);
+            let max_y = rect.y + rect.h.saturating_sub(1);
+            let cx = x.clamp(rect.x, max_x);
+            let cy = y.clamp(rect.y, max_y);
+            let dx = (cx as i64 - x as i64).unsigned_abs();
+            let dy = (cy as i64 - y as i64).unsigned_abs();
+            let dist = dx * dx + dy * dy;
+            if best.is_none_or(|(_, best_dist)| dist < best_dist) {
+                best = Some(((cx, cy), dist));
+            }
+        }
+        best.map(|(point, _)| point).unwrap_or((x, y))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +166,8 @@ pub enum LayoutError {
     UnknownScreen(String),
     #[error("screen '{0}' has invalid size")]
     InvalidSize(String),
+    #[error("screen '{screen}' has an invalid monitor: {reason}")]
+    InvalidMonitor { screen: String, reason: String },
 }
 
 impl Layout {
@@ -102,6 +180,7 @@ impl Layout {
                     height: 1080,
                 },
                 origin: None,
+                monitors: Vec::new(),
             }],
             links: Vec::new(),
         }
@@ -119,6 +198,28 @@ impl Layout {
             }
             if !names.insert(screen.name.clone()) {
                 return Err(LayoutError::DuplicateScreen(screen.name.clone()));
+            }
+            for monitor in &screen.monitors {
+                if monitor.size.width == 0 || monitor.size.height == 0 {
+                    return Err(LayoutError::InvalidMonitor {
+                        screen: screen.name.clone(),
+                        reason: "monitor has zero size".to_string(),
+                    });
+                }
+                if monitor.origin.x < 0 || monitor.origin.y < 0 {
+                    return Err(LayoutError::InvalidMonitor {
+                        screen: screen.name.clone(),
+                        reason: "monitor origin must be within the desktop".to_string(),
+                    });
+                }
+                let right = monitor.origin.x as i64 + monitor.size.width as i64;
+                let bottom = monitor.origin.y as i64 + monitor.size.height as i64;
+                if right > screen.size.width as i64 || bottom > screen.size.height as i64 {
+                    return Err(LayoutError::InvalidMonitor {
+                        screen: screen.name.clone(),
+                        reason: "monitor extends past the desktop bounds".to_string(),
+                    });
+                }
             }
         }
 
@@ -176,11 +277,12 @@ impl Layout {
 
         if source.origin.is_some() && target.origin.is_some() {
             let transition = positioned_transition(source, target, edge, x, y)?;
+            let (tx, ty) = target.clamp_point_to_monitor(transition.0, transition.1);
             return Some(Transition {
                 target_screen: link.to.clone(),
                 target_edge: edge.opposite(),
-                x: transition.0,
-                y: transition.1,
+                x: tx,
+                y: ty,
             });
         }
 
@@ -197,6 +299,7 @@ impl Layout {
             Edge::Bottom => (scale(x, source.size.width, target.size.width), 1),
         };
 
+        let (mapped_x, mapped_y) = target.clamp_point_to_monitor(mapped_x, mapped_y);
         Some(Transition {
             target_screen: link.to.clone(),
             target_edge: edge.opposite(),
@@ -446,6 +549,7 @@ mod tests {
                         height: 1080,
                     },
                     origin: None,
+                    monitors: Vec::new(),
                 },
                 Screen {
                     name: "mac".to_string(),
@@ -454,6 +558,7 @@ mod tests {
                         height: 1117,
                     },
                     origin: None,
+                    monitors: Vec::new(),
                 },
             ],
             links: vec![Link {
@@ -479,6 +584,120 @@ mod tests {
         );
     }
 
+    /// A tall macOS desktop made of two stacked displays with a vertical gap
+    /// between y=1000 and y=1200.
+    fn mac_with_gap() -> Screen {
+        Screen {
+            name: "mac".to_string(),
+            size: Size {
+                width: 1728,
+                height: 2000,
+            },
+            origin: None,
+            monitors: vec![
+                Monitor {
+                    origin: Point { x: 0, y: 0 },
+                    size: Size {
+                        width: 1728,
+                        height: 1000,
+                    },
+                },
+                Monitor {
+                    origin: Point { x: 0, y: 1200 },
+                    size: Size {
+                        width: 1728,
+                        height: 800,
+                    },
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn clamp_keeps_points_already_on_a_monitor() {
+        let mac = mac_with_gap();
+        assert_eq!(mac.clamp_point_to_monitor(100, 500), (100, 500));
+        assert_eq!(mac.clamp_point_to_monitor(100, 1500), (100, 1500));
+    }
+
+    #[test]
+    fn clamp_snaps_gap_points_onto_the_nearest_monitor() {
+        let mac = mac_with_gap();
+        // Just below the top monitor -> snaps up to its last row.
+        assert_eq!(mac.clamp_point_to_monitor(100, 1050).1, 999);
+        // Just above the bottom monitor -> snaps down to its first row.
+        assert_eq!(mac.clamp_point_to_monitor(100, 1150).1, 1200);
+    }
+
+    #[test]
+    fn single_display_screen_leaves_in_bounds_points_untouched() {
+        let screen = Screen {
+            name: "w".to_string(),
+            size: Size {
+                width: 100,
+                height: 100,
+            },
+            origin: None,
+            monitors: Vec::new(),
+        };
+        assert_eq!(screen.clamp_point_to_monitor(40, 90), (40, 90));
+    }
+
+    #[test]
+    fn transition_into_multi_monitor_target_never_lands_in_a_gap() {
+        let layout = Layout {
+            screens: vec![
+                Screen {
+                    name: "windows".to_string(),
+                    size: Size {
+                        width: 1920,
+                        height: 1080,
+                    },
+                    origin: None,
+                    monitors: Vec::new(),
+                },
+                mac_with_gap(),
+            ],
+            links: vec![Link {
+                from: "windows".to_string(),
+                edge: Edge::Right,
+                to: "mac".to_string(),
+            }],
+        };
+
+        let mac = mac_with_gap();
+        for source_y in [0u32, 270, 540, 700, 810, 900, 1079] {
+            let transition = layout
+                .transition("windows", Edge::Right, 1919, source_y)
+                .unwrap();
+            let on_monitor = mac
+                .monitor_rects()
+                .iter()
+                .any(|rect| rect.contains(transition.x, transition.y));
+            assert!(
+                on_monitor,
+                "entry ({}, {}) for source_y={source_y} fell in a gap",
+                transition.x, transition.y
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_monitor_outside_the_desktop() {
+        let mut layout = two_screen_layout();
+        layout.screens[1].monitors = vec![Monitor {
+            origin: Point { x: 0, y: 0 },
+            size: Size {
+                width: 9999,
+                height: 10,
+            },
+        }];
+        assert!(matches!(
+            layout.validate(),
+            Err(LayoutError::InvalidMonitor { .. })
+        ));
+    }
+
     #[test]
     fn maps_right_edge_to_left_edge_of_target() {
         let transition = two_screen_layout()
@@ -501,6 +720,7 @@ mod tests {
                         height: 1080,
                     },
                     origin: Some(Point { x: 0, y: 0 }),
+                    monitors: Vec::new(),
                 },
                 Screen {
                     name: "mac".to_string(),
@@ -509,6 +729,7 @@ mod tests {
                         height: 900,
                     },
                     origin: Some(Point { x: 1920, y: 180 }),
+                    monitors: Vec::new(),
                 },
             ],
             links: vec![Link {
@@ -542,6 +763,7 @@ mod tests {
                         height: 1080,
                     },
                     origin: Some(Point { x: 0, y: 0 }),
+                    monitors: Vec::new(),
                 },
                 Screen {
                     name: "mac".to_string(),
@@ -550,6 +772,7 @@ mod tests {
                         height: 1117,
                     },
                     origin: Some(Point { x: -1728, y: -37 }),
+                    monitors: Vec::new(),
                 },
             ],
             links: vec![Link {
@@ -588,6 +811,7 @@ mod tests {
                         height: 1080,
                     },
                     origin: Some(Point { x: 0, y: 0 }),
+                    monitors: Vec::new(),
                 },
                 Screen {
                     name: "mac".to_string(),
@@ -596,6 +820,7 @@ mod tests {
                         height: 1117,
                     },
                     origin: Some(Point { x: 1920, y: 0 }),
+                    monitors: Vec::new(),
                 },
             ],
             links: vec![Link {
