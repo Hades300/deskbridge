@@ -115,9 +115,26 @@
         </div>
         <div class="row">
           <div class="grow muted" id="conn-hint">Not connected.</div>
+          <button id="pair">Pair…</button>
           <button id="disconnect">Disconnect</button>
           <button class="primary" id="connect">Connect</button>
         </div>
+      </section>
+
+      <section class="card" id="pair-card" style="display: none;">
+        <h2>Pairing</h2>
+        <div id="pair-idle">
+          <div class="muted">Confirm the same code on both devices to set up an encrypted connection.</div>
+        </div>
+        <div id="pair-code-wrap" style="display: none; text-align: center;">
+          <div class="muted" style="margin-bottom: 10px;">Make sure this matches the other device:</div>
+          <div id="pair-code" class="mono" style="font-size: 40px; font-weight: 700; letter-spacing: 6px; padding: 14px; background: var(--surface-2); border: 1px solid rgba(204,242,107,0.4); border-radius: 12px;"></div>
+          <div class="row" style="justify-content: center; margin-top: 14px;">
+            <button id="pair-cancel">Not the same</button>
+            <button class="primary" id="pair-confirm">They match</button>
+          </div>
+        </div>
+        <div id="pair-msg" class="muted" style="margin-top: 12px; display: none;"></div>
       </section>
 
       <section class="card">
@@ -211,6 +228,59 @@
           host.appendChild(el);
         }
       }
+
+      // Pairing
+      function showPairCard(show) { $("pair-card").style.display = show ? "" : "none"; }
+      function setPairState(state, payload) {
+        if (state === "code") {
+          $("pair-idle").style.display = "none";
+          $("pair-code-wrap").style.display = "";
+          $("pair-msg").style.display = "none";
+          $("pair-code").textContent = payload;
+        } else if (state === "msg") {
+          $("pair-code-wrap").style.display = "none";
+          $("pair-msg").style.display = "";
+          $("pair-msg").textContent = payload;
+        } else {
+          $("pair-idle").style.display = "";
+          $("pair-code-wrap").style.display = "none";
+          $("pair-msg").style.display = "none";
+        }
+      }
+
+      async function startPair() {
+        const server = $("server").value.trim();
+        if (!server) { $("conn-hint").textContent = "Enter or pick a server to pair with."; return; }
+        showPairCard(true);
+        setPairState("msg", "Connecting to " + server + "…");
+        try {
+          await invoke("start_pairing", { server });
+        } catch (e) {
+          setPairState("msg", "Pairing failed: " + e);
+        }
+      }
+
+      $("pair").addEventListener("click", startPair);
+      $("pair-confirm").addEventListener("click", () => invoke("confirm_pairing").catch(() => {}));
+      $("pair-cancel").addEventListener("click", () => {
+        invoke("cancel_pairing").catch(() => {});
+        setPairState("idle");
+        showPairCard(false);
+      });
+
+      const { listen } = window.__TAURI__.event;
+      listen("pairing:code", (e) => setPairState("code", e.payload));
+      listen("pairing:done", (e) => {
+        const { server, secret } = e.payload || {};
+        if (server) $("server").value = server;
+        if (secret) $("secret").value = secret;
+        setPairState("msg", "Paired ✓  You can connect now.");
+      });
+      listen("pairing:closed", () => {
+        if ($("pair-code-wrap").style.display !== "none") {
+          setPairState("msg", "Pairing ended.");
+        }
+      });
 
       $("connect").addEventListener("click", connect);
       $("disconnect").addEventListener("click", disconnect);
