@@ -7,7 +7,6 @@
     <style>
       :root {
         --bg: #16181d;
-        --bg-2: #1b1e24;
         --surface: rgba(255, 255, 255, 0.04);
         --surface-2: rgba(255, 255, 255, 0.06);
         --hairline: rgba(255, 255, 255, 0.08);
@@ -16,6 +15,7 @@
         --accent: #ccf26b;
         --accent-ink: #1b2206;
         --success: #6fd778;
+        --warn: #f0a64a;
       }
       * { box-sizing: border-box; }
       html, body { height: 100%; margin: 0; }
@@ -27,9 +27,7 @@
         padding: 28px 26px 32px;
       }
       .app { max-width: 760px; margin: 0 auto; }
-      header {
-        display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
-      }
+      header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
       .logo {
         width: 40px; height: 40px; border-radius: 11px;
         background: linear-gradient(135deg, var(--accent), #9bd13f);
@@ -45,7 +43,8 @@
         background: var(--surface); border: 1px solid var(--hairline);
         border-radius: 999px; display: inline-flex; align-items: center; gap: 6px;
       }
-      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+      .dot.on { background: var(--success); box-shadow: 0 0 8px var(--success); }
       .card {
         background: var(--surface); border: 1px solid var(--hairline);
         border-radius: 14px; padding: 18px; margin-bottom: 16px;
@@ -55,16 +54,23 @@
         text-transform: uppercase; letter-spacing: 0.6px; margin: 0 0 14px;
       }
       .row { display: flex; align-items: center; gap: 12px; }
+      .row + .row { margin-top: 10px; }
       .grow { flex: 1; }
+      label.field { display: flex; flex-direction: column; gap: 5px; flex: 1; }
+      label.field span { font-size: 11.5px; color: var(--muted); }
+      input {
+        font: inherit; font-size: 13px; color: var(--text);
+        background: var(--surface-2); border: 1px solid var(--hairline);
+        border-radius: 9px; padding: 8px 11px; outline: none;
+      }
+      input:focus { border-color: rgba(204, 242, 107, 0.5); }
       button {
         font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
         border-radius: 9px; padding: 8px 14px; border: 1px solid var(--hairline);
         background: var(--surface-2); color: var(--text); transition: all 0.12s ease;
       }
       button:hover { background: rgba(255, 255, 255, 0.10); }
-      button.primary {
-        background: var(--accent); color: var(--accent-ink); border-color: transparent;
-      }
+      button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
       button.primary:hover { filter: brightness(1.05); }
       button:disabled { opacity: 0.5; cursor: default; }
       .server {
@@ -93,10 +99,26 @@
           <div class="sub">Cross-platform control panel · preview</div>
         </div>
         <div class="pills">
-          <span class="pill"><span class="dot"></span> <span id="status">Ready</span></span>
+          <span class="pill"><span class="dot" id="dot"></span> <span id="status">Disconnected</span></span>
           <span class="pill mono" id="versions">…</span>
         </div>
       </header>
+
+      <section class="card">
+        <h2>Connection</h2>
+        <div class="row">
+          <label class="field"><span>Server</span><input id="server" placeholder="192.168.2.5:24800" /></label>
+          <label class="field" style="max-width: 150px;"><span>This screen</span><input id="name" value="mac" /></label>
+        </div>
+        <div class="row">
+          <label class="field"><span>Secret (optional)</span><input id="secret" type="password" placeholder="paired or shared secret" /></label>
+        </div>
+        <div class="row">
+          <div class="grow muted" id="conn-hint">Not connected.</div>
+          <button id="disconnect">Disconnect</button>
+          <button class="primary" id="connect">Connect</button>
+        </div>
+      </section>
 
       <section class="card">
         <h2>Find a server</h2>
@@ -105,15 +127,6 @@
           <button class="primary" id="scan">Scan</button>
         </div>
         <div id="servers"></div>
-      </section>
-
-      <section class="card">
-        <h2>About</h2>
-        <div class="muted">
-          This window is a Tauri preview of a single cross-platform UI. It drives the
-          verified <span class="mono">deskbridge</span> daemon; pairing, layout, and
-          status move here next.
-        </div>
       </section>
     </div>
 
@@ -124,29 +137,49 @@
       async function loadVersions() {
         try {
           const app = await invoke("app_version");
-          let daemon = "—";
-          try { daemon = (await invoke("daemon_version")).split("\n")[0]; } catch (_) {}
           $("versions").textContent = `ui ${app}`;
-          $("versions").title = daemon;
+          try { $("versions").title = (await invoke("daemon_version")).split("\n")[0]; } catch (_) {}
+        } catch (_) { $("versions").textContent = "ui ?"; }
+      }
+
+      async function refreshStatus() {
+        let running = false;
+        try { running = await invoke("connection_status"); } catch (_) {}
+        $("dot").classList.toggle("on", running);
+        $("status").textContent = running ? "Connected" : "Disconnected";
+        $("conn-hint").textContent = running ? "Client session running." : "Not connected.";
+      }
+
+      async function connect() {
+        const server = $("server").value.trim();
+        if (!server) { $("conn-hint").textContent = "Enter a server address first."; return; }
+        $("connect").disabled = true;
+        try {
+          await invoke("connect", { server, name: $("name").value.trim(), secret: $("secret").value });
+          $("conn-hint").textContent = "Connecting…";
         } catch (e) {
-          $("versions").textContent = "ui ?";
+          $("conn-hint").textContent = "Connect failed: " + e;
+        } finally {
+          $("connect").disabled = false;
+          setTimeout(refreshStatus, 600);
         }
+      }
+
+      async function disconnect() {
+        try { await invoke("disconnect"); } catch (_) {}
+        refreshStatus();
       }
 
       async function scan() {
         const btn = $("scan");
-        btn.disabled = true;
-        btn.textContent = "Scanning…";
+        btn.disabled = true; btn.textContent = "Scanning…";
         $("scan-hint").textContent = "Looking for servers…";
         try {
-          const servers = await invoke("discover_servers");
-          renderServers(servers);
+          renderServers(await invoke("discover_servers"));
         } catch (e) {
-          $("servers").innerHTML = "";
-          $("scan-hint").textContent = "Scan failed: " + e;
+          $("servers").innerHTML = ""; $("scan-hint").textContent = "Scan failed: " + e;
         } finally {
-          btn.disabled = false;
-          btn.textContent = "Scan";
+          btn.disabled = false; btn.textContent = "Scan";
         }
       }
 
@@ -165,16 +198,26 @@
           el.innerHTML =
             '<div class="icon">🖥️</div>' +
             '<div class="grow"><div class="name"></div><div class="addr"></div></div>' +
-            (s.version ? '<div class="ver"></div>' : "");
+            (s.version ? '<div class="ver"></div>' : "") +
+            '<button class="use">Use</button>';
           el.querySelector(".name").textContent = s.name;
           el.querySelector(".addr").textContent = s.address;
           if (s.version) el.querySelector(".ver").textContent = s.version;
+          el.querySelector(".use").addEventListener("click", () => {
+            $("server").value = s.address;
+            $("server").scrollIntoView({ behavior: "smooth", block: "center" });
+            $("server").focus();
+          });
           host.appendChild(el);
         }
       }
 
+      $("connect").addEventListener("click", connect);
+      $("disconnect").addEventListener("click", disconnect);
       $("scan").addEventListener("click", scan);
       loadVersions();
+      refreshStatus();
+      setInterval(refreshStatus, 2500);
     </script>
   </body>
 </html>
