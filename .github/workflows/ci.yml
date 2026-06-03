@@ -93,13 +93,21 @@ jobs:
           path: build/DeskBridge.app
 
   tauri-desktop:
-    name: Tauri desktop
-    runs-on: ubuntu-latest
+    name: Tauri desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -121,6 +129,7 @@ jobs:
         run: cargo build
 
       - name: Clippy desktop app
+        if: matrix.os == 'ubuntu-latest'
         working-directory: apps/desktop/src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
