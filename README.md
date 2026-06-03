@@ -78,6 +78,7 @@ Release assets:
 - `DeskBridge-windows-x64.zip`
 - `DeskBridge-windows-arm64.zip`
 - `DeskBridge-linux-x64.tar.gz`
+- `DeskBridge-desktop-macos.tar.gz` / `DeskBridge-desktop-windows-x64.zip` / `DeskBridge-desktop-linux-x64.tar.gz` — preview of the new single cross-platform app (discover / pair / connect / tray); portable, runs alongside the native apps.
 
 The Windows zip contains both the admin app and the command-line daemon. Start with `DeskBridge.Admin.exe`; the admin app launches `deskbridge.exe` for you.
 
