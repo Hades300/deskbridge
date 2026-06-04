@@ -316,7 +316,11 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
         .setup(|app| {
-            build_tray(app)?;
+            // The tray is optional: on a headless or DBus-less session (CI, some
+            // Linux setups) it may be unavailable, which must not stop the app.
+            if let Err(err) = build_tray(app) {
+                eprintln!("tray unavailable: {err}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
