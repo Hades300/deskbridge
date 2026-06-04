@@ -135,6 +135,7 @@ fn connect(
     } else {
         name
     };
+    eprintln!("connect requested: server={server} name={name} secret={}", secret.is_some());
 
     let mut guard = state.client.lock().map_err(|_| "state poisoned".to_string())?;
     if let Some(mut child) = guard.take() {
