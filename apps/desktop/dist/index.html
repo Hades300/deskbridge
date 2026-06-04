@@ -282,9 +282,17 @@
         }
       });
 
+      async function loadDefaultServer() {
+        try {
+          const s = await invoke("default_server");
+          if (s && !$("server").value) $("server").value = s;
+        } catch (_) {}
+      }
+
       $("connect").addEventListener("click", connect);
       $("disconnect").addEventListener("click", disconnect);
       $("scan").addEventListener("click", scan);
+      loadDefaultServer();
       loadVersions();
       refreshStatus();
       setInterval(refreshStatus, 2500);

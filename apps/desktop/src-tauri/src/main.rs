@@ -90,6 +90,16 @@ fn daemon_version() -> Result<String, String> {
     run_deskbridge(&["version"])
 }
 
+/// The server address to prefill the connection field with: the
+/// `DESKBRIDGE_SERVER` environment variable if set, else a sensible default.
+#[tauri::command]
+fn default_server() -> String {
+    std::env::var("DESKBRIDGE_SERVER")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "192.168.2.5:24800".to_string())
+}
+
 #[tauri::command]
 fn discover_servers() -> Result<Vec<DiscoveredServer>, String> {
     let output = run_deskbridge(&["discover", "--timeout-ms", "2500"])?;
@@ -326,6 +336,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app_version,
             daemon_version,
+            default_server,
             discover_servers,
             connect,
             disconnect,
