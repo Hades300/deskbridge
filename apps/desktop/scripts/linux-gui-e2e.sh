@@ -19,6 +19,9 @@ export WEBKIT_DISABLE_DMABUF_RENDERER=1
 export LIBGL_ALWAYS_SOFTWARE=1
 export GDK_BACKEND=x11
 export DESKBRIDGE_BIN="$DAEMON"
+# Seed the app's Server field so Connect needs only a mouse click (headless X
+# has no window manager, making synthetic keyboard focus for typing unreliable).
+export DESKBRIDGE_SERVER="127.0.0.1:24850"
 
 cleanup() {
   [[ -n "${APP_PID:-}" ]] && kill "$APP_PID" 2>/dev/null || true
@@ -62,32 +65,28 @@ sleep 2
 import -window root "$SHOTS/01-launch.png"
 echo "OK: desktop app launched and rendered a window"
 
-# Best-effort: drive a Connect through the GUI. Headless X has no window manager,
-# so synthetic keyboard focus is unreliable; a miss here is reported, not fatal.
-# The hard gate above (launch + render) is the regression guard.
+# Drive Connect through the GUI. The Server field is pre-seeded from
+# DESKBRIDGE_SERVER, so this is a pure mouse click (no keyboard focus needed).
 xdotool windowfocus --sync "$window" 2>/dev/null || true
-xdotool mousemove 378 173 click 1
-sleep 0.5
-xdotool key --clearmodifiers ctrl+a
-xdotool type --clearmodifiers "127.0.0.1:24850"
-sleep 0.5
 xdotool mousemove 775 278 click 1
 
 accepted=0
-for _ in $(seq 1 25); do
+for _ in $(seq 1 30); do
   if grep -q "client accepted" /tmp/dbserver.log; then accepted=1; break; fi
   sleep 0.4
 done
 import -window root "$SHOTS/02-connect.png"
-if [[ "$accepted" = 1 ]]; then
-  echo "GUI-CONNECT: OK (a real click drove a connection; daemon logged 'client accepted')"
-else
-  echo "GUI-CONNECT: WARN (no 'client accepted'; headless keyboard focus is unreliable without a WM — see screenshots)"
+if [[ "$accepted" != 1 ]]; then
+  echo "ERROR: GUI Connect did not produce a server-side 'client accepted'"
+  echo "--- server log ---"; cat /tmp/dbserver.log
+  echo "--- app log ---"; cat /tmp/dbapp.log
+  exit 1
 fi
+echo "OK: GUI Connect drove a real connection (daemon logged 'client accepted')"
 
 # Visual capture of discovery (best-effort).
 xdotool mousemove 788 394 click 1
 sleep 5
 import -window root "$SHOTS/03-discover.png"
 
-echo "GUI launch/render E2E passed."
+echo "GUI end-to-end test passed."
