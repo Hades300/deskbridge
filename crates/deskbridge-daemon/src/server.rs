@@ -4,9 +4,9 @@ use deskbridge_core::secure::{recv, send};
 use deskbridge_core::{
     Button, CLIPBOARD_PROTOCOL_VERSION, Capability, ClipboardConfig, ClipboardPacket,
     DEFAULT_HEARTBEAT_MS, DebugCommand, DebugRequest, DebugResponse, Edge, Encryption, FrameError,
-    Hello, InputEvent, InputPacket, InputRouter, KeyState, Layout, Message,
-    REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome, normalize_remote_scroll_scale,
-    server_handshake,
+    Hello, InputEvent, InputPacket, InputRouter, KeyState, Layout, Message, PortalFlashPacket,
+    PortalFlashRole, PortalTransition, REPLACED_SESSION_REASON, Size, Status, StatusKind, Welcome,
+    normalize_remote_scroll_scale, server_handshake,
 };
 use std::{
     collections::HashMap,
@@ -441,6 +441,51 @@ struct ClientSessionRuntime<'a> {
 struct RoutedCapture {
     event: Option<InputEvent>,
     released_to_local: bool,
+    portal: Option<PortalTransition>,
+}
+
+/// Default appearance of the cursor-crossing flash the client renders.
+const PORTAL_FLASH_COLOR: &str = "#7bd88f";
+const PORTAL_FLASH_DURATION_MS: u32 = 320;
+const PORTAL_FLASH_SPEED_PX_PER_SEC: u32 = 1400;
+
+/// Build the flash packet a given client should render for a crossing, if the
+/// crossing concerns that client. Entry flashes where the cursor arrives; exit
+/// flashes where it leaves.
+fn portal_flash_for_client(
+    portal: &PortalTransition,
+    client_name: &str,
+    seq: u64,
+) -> Option<PortalFlashPacket> {
+    let (role, edge, x, y) = if portal.target_screen == client_name {
+        (
+            PortalFlashRole::Entry,
+            portal.target_edge,
+            portal.target_x,
+            portal.target_y,
+        )
+    } else if portal.source_screen == client_name {
+        (
+            PortalFlashRole::Exit,
+            portal.source_edge,
+            portal.source_x,
+            portal.source_y,
+        )
+    } else {
+        return None;
+    };
+
+    Some(PortalFlashPacket {
+        seq,
+        screen: client_name.to_string(),
+        role,
+        edge,
+        x,
+        y,
+        color: PORTAL_FLASH_COLOR.to_string(),
+        duration_ms: PORTAL_FLASH_DURATION_MS,
+        speed_px_per_sec: PORTAL_FLASH_SPEED_PX_PER_SEC,
+    })
 }
 
 fn new_server_debug_log() -> ServerDebugLog {
@@ -889,6 +934,7 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
     let (reader, mut writer) = stream.into_split();
     let mut inbound = spawn_reader(reader, enc.clone());
     let mut seq = 0_u64;
+    let mut portal_flash_seq = 0_u64;
     let mut demo_stage = 0_u64;
     let mut route_layout = session_route_layout(
         runtime_settings.layout(),
@@ -964,6 +1010,17 @@ async fn run_client_session(stream: TcpStream, runtime: ClientSessionRuntime<'_>
                             .as_ref()
                             .is_some_and(|router| router.active_screen() != options.name);
                         crate::capture::set_local_input_suppressed(suppress_local_input);
+                    }
+
+                    // Tell the client to flash the cursor entering/leaving its
+                    // screen so the crossing is visible.
+                    if probe_id.is_none()
+                        && let Some(portal) = routed.portal.as_ref()
+                        && let Some(flash) =
+                            portal_flash_for_client(portal, client_name, portal_flash_seq)
+                    {
+                        portal_flash_seq += 1;
+                        send(&mut writer, enc, &Message::PortalFlash(flash)).await?;
                     }
 
                     if probe_id.is_none()
@@ -2398,6 +2455,7 @@ fn route_capture_event_for_client(
         .portal
         .as_ref()
         .is_some_and(|portal| portal.source_screen == client_name && outcome.input.is_none());
+    let portal = outcome.portal;
     let event = outcome
         .input
         .and_then(|routed| (routed.target_screen == client_name).then_some(routed.event));
@@ -2405,6 +2463,7 @@ fn route_capture_event_for_client(
     RoutedCapture {
         event,
         released_to_local,
+        portal,
     }
 }
 
@@ -2829,6 +2888,14 @@ mod tests {
             })
         );
 
+        // Crossing into the client surfaces an entry portal that becomes an
+        // Entry flash for that client.
+        let entry_portal = enter.portal.expect("entry portal");
+        assert_eq!(entry_portal.target_screen, "mac");
+        let entry_flash = portal_flash_for_client(&entry_portal, "mac", 0).unwrap();
+        assert_eq!(entry_flash.role, PortalFlashRole::Entry);
+        assert_eq!(entry_flash.screen, "mac");
+
         let returned = route_capture_event_for_client(
             &mut router,
             CaptureEvent::Input(InputEvent::MouseMove { dx: -10, dy: 0 }),
@@ -2836,6 +2903,15 @@ mod tests {
         );
         assert_eq!(returned.event, None);
         assert!(returned.released_to_local);
+
+        // Returning to the server surfaces an exit portal -> Exit flash for the
+        // client it left.
+        let exit_portal = returned.portal.expect("exit portal");
+        let exit_flash = portal_flash_for_client(&exit_portal, "mac", 1).unwrap();
+        assert_eq!(exit_flash.role, PortalFlashRole::Exit);
+
+        // A crossing that does not involve a screen produces no flash for it.
+        assert!(portal_flash_for_client(&entry_portal, "linux", 2).is_none());
     }
 
     #[test]

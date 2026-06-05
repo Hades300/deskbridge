@@ -271,6 +271,9 @@ Stable enough to use and iterate on:
 
 Still intentionally limited:
 
+- Cursor-crossing flash: the server emits an entry/exit flash signal to the
+  client on every screen crossing and the client receives it; drawing the
+  on-screen overlay is a native follow-up.
 - Cross-screen drag-and-drop: the transfer/staging engine and protocol are in
   place (dropped files are received and materialized to disk); capturing the
   originating drag gesture and injecting the native OS drop are platform
